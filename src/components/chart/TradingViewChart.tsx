@@ -110,13 +110,9 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const CANDLE_H  = Math.round(height * 0.58);
-    const VOLUME_H  = Math.round(height * 0.12);
-    const RSI_H     = Math.round(height * 0.22);
-
     const chart = createChart(containerRef.current, {
       width:  containerRef.current.clientWidth,
-      height: CANDLE_H + VOLUME_H + RSI_H,
+      height: containerRef.current.clientHeight || height || 500,
       layout: {
         background:  { type: ColorType.Solid, color: "transparent" },
         textColor:   "#71717A",
@@ -134,7 +130,7 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       },
       rightPriceScale: { 
         borderColor: "rgba(39,39,42,0.5)", 
-        scaleMargins: { top: 0.15, bottom: 0.15 },
+        scaleMargins: { top: 0.05, bottom: 0.35 },
         autoScale: true,
       },
       timeScale:       { borderColor: "rgba(39,39,42,0.5)", timeVisible: true, secondsVisible: false },
@@ -151,14 +147,14 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       priceScaleId:   "right",
     });
 
-    // Volume histogram (overlaid, scaled to bottom 20% of candle pane)
+    // Volume histogram
     const volume = chart.addSeries(HistogramSeries, {
       color:        "rgba(212,168,67,0.25)",
       priceFormat:  { type: "volume" },
       priceScaleId: "volume",
     });
     chart.priceScale("volume").applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0 },
+      scaleMargins: { top: 0.65, bottom: 0.20 },
     });
 
     // EMA lines
@@ -175,7 +171,7 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       lastValueVisible: true,
     });
     chart.priceScale("rsi").applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0.02 },
+      scaleMargins: { top: 0.80, bottom: 0.0 },
       autoScale: true,
     });
 
@@ -227,7 +223,10 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
 
     // Also observe container size changes (e.g. when side panels open/close)
     const ro = new ResizeObserver(() => {
-      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
+      if (containerRef.current) chart.applyOptions({ 
+        width: containerRef.current.clientWidth,
+        height: containerRef.current.clientHeight
+      });
     });
     ro.observe(containerRef.current);
 
@@ -294,7 +293,7 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
   }, [lines]);
 
   return (
-    <div className="relative w-full select-none">
+    <div className="relative w-full h-full select-none">
       {/* EMA legend */}
       <div className="absolute top-2 left-2 z-10 flex items-center gap-3 pointer-events-none">
         {[
@@ -340,7 +339,7 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
         </div>
       )}
 
-      <div ref={containerRef} className="w-full" />
+      <div ref={containerRef} className="w-full h-full absolute inset-0" />
     </div>
   );
 }

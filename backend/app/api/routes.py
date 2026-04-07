@@ -83,6 +83,20 @@ async def set_trading_style(req: SetTradingStyleRequest):
     return {"status": "ok", "trading_style": req.trading_style}
 
 
+class SetTargetSymbolRequest(BaseModel):
+    target_symbol: str = "XAUUSD"
+
+@router.post("/target-symbol")
+async def set_target_symbol(req: SetTargetSymbolRequest):
+    """Updates the runtime target symbol for the analysis loop."""
+    from app.services.trading_state import trading_state
+    
+    # Optional basic validation if we only support some forex pairs
+    trading_state.set_target_symbol(req.target_symbol)
+    logger.info(f"Target symbol changed to: {req.target_symbol}")
+    return {"status": "ok", "target_symbol": req.target_symbol}
+
+
 # ── Signal Execution ──────────────────────────────────────────────────────────
 
 @router.post("/signals/execute")
