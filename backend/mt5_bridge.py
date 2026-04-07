@@ -139,17 +139,43 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
     # ── RISK MANAGEMENT CHECKS ────────────────────────────────────────────────
     
     if risk_manager:
-        # Check if we can open a position
-        can_trade, reason = risk_manager.can_open_position(direction)
-        if not can_trade:
-            logger.warning(f"⚠️ Risk check failed: {reason}")
-            return {"status": "blocked", "reason": reason}
-        
-        # Calculate optimal lot size (overrides signal lot)
+        # 1. Always calculate optimal lot size first
         entry_price = float(signal.get("entry_price", 0))
         if entry_price > 0:
             lot = risk_manager.calculate_lot_size(entry_price, sl)
-            logger.info(f"Risk-adjusted lot size: {lot}")
+        
+        # 2. Check if we can open a position with this desired lot
+        can_trade, reason = risk_manager.can_open_position(
+            direction=direction, 
+            symbol=SYMBOL, 
+            volume=lot, 
+            price=entry_price
+        )
+        
+        # 3. If margin is insufficient, attempt fallback to minimum viable lot size
+        if not can_trade and "Insufficient free margin" in reason:
+            min_lot = risk_manager.config.min_lot_size
+            if lot > min_lot:
+                logger.warning(f"⚠️ {reason} — Attempting fallback to minimum lot size ({min_lot})")
+                can_trade_min, min_reason = risk_manager.can_open_position(
+                    direction=direction, 
+                    symbol=SYMBOL, 
+                    volume=min_lot, 
+                    price=entry_price
+                )
+                if can_trade_min:
+                    lot = min_lot
+                    can_trade = True
+                    logger.info(f"✅ Adjusted to minimum viable lot size: {lot}")
+                else:
+                    reason = min_reason  # Update reason to the minimum lot failure
+        
+        # 4. Final check
+        if not can_trade:
+            logger.warning(f"⚠️ Risk check failed: {reason}")
+            return {"status": "blocked", "reason": reason}
+            
+        logger.info(f"Risk-adjusted lot size approved: {lot}")
     
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -258,20 +284,30 @@ async def run(auto_trade: bool = False):
 
 
 async def tick_sender(ws):
+    last_price = None
     while True:
         tick = mt5.symbol_info_tick(SYMBOL)
         if tick and tick.bid > 0 and tick.ask > 0:
-            payload = {
-                "type": "TICK",
-                "data": {
-                    "symbol": SYMBOL,
-                    "bid":    round(tick.bid, 2),
-                    "ask":    round(tick.ask, 2),
-                    "spread": round(tick.ask - tick.bid, 2),
-                    "time":   datetime.fromtimestamp(tick.time, tz=timezone.utc).isoformat(),
-                },
-            }
-            await ws.send(json.dumps(payload))
+            price = round(tick.bid, 2)
+            
+            # Spike Guard: Ignore price <= 1.0 or massive jumps (> 1%)
+            if price <= 1.0:
+                logger.warning(f"⚠️ Ignoring invalid price tick: {price}")
+            elif last_price is not None and abs(price - last_price) > (last_price * 0.01):
+                logger.warning(f"⚠️ Spike Guard (Local): Ignoring potential bad tick {price} (last: {last_price})")
+            else:
+                last_price = price
+                payload = {
+                    "type": "TICK",
+                    "data": {
+                        "symbol": SYMBOL,
+                        "bid":    price,
+                        "ask":    round(tick.ask, 2),
+                        "spread": round(tick.ask - tick.bid, 2),
+                        "time":   datetime.fromtimestamp(tick.time, tz=timezone.utc).isoformat(),
+                    },
+                }
+                await ws.send(json.dumps(payload))
         await asyncio.sleep(TICK_INTERVAL)
 
 
