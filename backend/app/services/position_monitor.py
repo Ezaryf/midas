@@ -281,6 +281,7 @@ class PositionMonitor:
         if pos.type == mt5.ORDER_TYPE_SELL and new_sl >= pos.sl:
             return
         
+<<<<<<< HEAD
         # Profit-floor guard: never trail SL into a loss
         # Trailing should only lock in profit, never lock in loss
         if pos.type == mt5.ORDER_TYPE_BUY and new_sl < pos.price_open:
@@ -290,6 +291,8 @@ class PositionMonitor:
             logger.debug(f"Trailing SL {new_sl:.2f} above entry {pos.price_open:.2f} — clamping to entry")
             new_sl = pos.price_open
         
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         # Modify position
         modify_request = {
             "action": mt5.TRADE_ACTION_SLTP,
@@ -425,6 +428,7 @@ class PositionMonitor:
         }
 
 
+<<<<<<< HEAD
 class _NullPositionMonitor(PositionMonitor):
     """
     Null Object pattern — safe no-op monitor when MT5 is unavailable.
@@ -474,25 +478,41 @@ class _NullPositionMonitor(PositionMonitor):
         }
 
 
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 # Global instance
 _position_monitor: Optional[PositionMonitor] = None
 
 
+<<<<<<< HEAD
 def get_position_monitor() -> PositionMonitor:
     """Get or create global position monitor instance.
     Always returns a non-None monitor — uses NullPositionMonitor when MT5 is unavailable.
     """
     global _position_monitor
 
+=======
+def get_position_monitor() -> Optional[PositionMonitor]:
+    """Get or create global position monitor instance"""
+    global _position_monitor
+    
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     if _position_monitor is None:
         try:
             if mt5.terminal_info() is not None:
                 _position_monitor = PositionMonitor()
             else:
+<<<<<<< HEAD
                 logger.warning("MT5 not initialized — using NullPositionMonitor")
                 _position_monitor = _NullPositionMonitor()
         except Exception as e:
             logger.error(f"Failed to initialize position monitor: {e}")
             _position_monitor = _NullPositionMonitor()
 
+=======
+                logger.warning("MT5 not initialized — position monitor unavailable")
+        except Exception as e:
+            logger.error(f"Failed to initialize position monitor: {e}")
+    
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     return _position_monitor

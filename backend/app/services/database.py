@@ -1,11 +1,17 @@
 """
 Database service for Supabase integration.
 Handles all database operations for trade history, analytics, and risk management.
+<<<<<<< HEAD
 With auto-reconnect and graceful degradation when Supabase is unavailable.
 """
 import os
 import logging
 import time
+=======
+"""
+import os
+import logging
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 from datetime import datetime, timedelta
 from typing import Optional
 from supabase import create_client, Client
@@ -13,6 +19,7 @@ from app.schemas.signal import TradeSignal
 
 logger = logging.getLogger(__name__)
 
+<<<<<<< HEAD
 # Reconnect backoff: 30s → 60s → 120s → 240s max
 _RECONNECT_BASE_SECONDS = 30
 _RECONNECT_MAX_SECONDS = 240
@@ -79,6 +86,24 @@ class DatabaseService:
         # Try to reconnect (respects backoff)
         return self._try_reconnect()
 
+=======
+
+class DatabaseService:
+    def __init__(self):
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            logger.warning("Supabase credentials not configured — database features disabled")
+            self.client: Optional[Client] = None
+        else:
+            self.client = create_client(supabase_url, supabase_key)
+            logger.info("✅ Connected to Supabase")
+    
+    def is_enabled(self) -> bool:
+        """Check if database is configured and available"""
+        return self.client is not None
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     
     # ── Signals ───────────────────────────────────────────────────────────────
     

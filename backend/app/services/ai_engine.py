@@ -1,11 +1,18 @@
 import json
 import logging
+<<<<<<< HEAD
 import os
 import asyncio
 from openai import AsyncOpenAI
 from app.schemas.signal import TradeSignal
 from app.services.pattern_recognition import Pattern
 from typing import List, Optional
+=======
+from openai import AsyncOpenAI
+from app.schemas.signal import TradeSignal
+from app.services.pattern_recognition import PatternRecognizer, Pattern
+from typing import List
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +22,7 @@ STRUCTURED_OUTPUT_PROVIDERS = {"openai", "grok"}
 # Providers that need plain JSON mode + manual parsing
 JSON_MODE_PROVIDERS = {"groq", "claude", "gemini"}
 
+<<<<<<< HEAD
 # Fallback chain: fast/free providers to try when primary fails
 FALLBACK_PROVIDERS = ["groq", "gemini"]
 
@@ -27,11 +35,16 @@ _PROVIDER_KEY_ENV = {
     "claude": "CLAUDE_API_KEY",
 }
 
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 
 class AITradingEngine:
     def __init__(self, api_key: str | None = None, provider: str = "openai"):
         self.provider = provider
+<<<<<<< HEAD
         self._api_key = api_key
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         base_urls = {
             "openai":  None,
             "claude":  "https://api.anthropic.com/v1",
@@ -55,8 +68,11 @@ class AITradingEngine:
 
         self.client = AsyncOpenAI(**kwargs)
 
+<<<<<<< HEAD
     # ── Primary Signal Generation ────────────────────────────────────────────
 
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     async def generate_signal(
         self,
         current_price: float,
@@ -64,7 +80,11 @@ class AITradingEngine:
         indicators: dict,
         calendar_events: list,
         trading_style: str = "Intraday",
+<<<<<<< HEAD
         patterns: Optional[List[Pattern]] = None,
+=======
+        patterns: List[Pattern] = None,
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     ) -> TradeSignal:
         # Format detected patterns
         pattern_info = "None detected"
@@ -155,6 +175,7 @@ RULES:
             return signal
 
         except Exception as e:
+<<<<<<< HEAD
             logger.error(f"AI signal generation failed ({self.provider}): {e}")
             raise  # Let caller handle — enables fallback chain
 
@@ -254,3 +275,18 @@ def _build_pattern_signal(
         reasoning="All AI providers failed and no strong patterns detected — no trade recommended",
         trading_style=trading_style,
     )
+=======
+            logger.error(f"AI signal generation failed: {e}")
+            # Return fallback signal with correct style
+            fallback = TradeSignal(
+                direction="HOLD",
+                entry_price=current_price,
+                stop_loss=current_price,
+                take_profit_1=current_price,
+                take_profit_2=current_price,
+                confidence=0,
+                reasoning="AI generation failed - no trade recommended",
+                trading_style=trading_style
+            )
+            return fallback
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1

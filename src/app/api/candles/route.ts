@@ -20,6 +20,7 @@ const RANGE_MAP: Record<string, string> = {
   D1:  "1y",
 };
 
+<<<<<<< HEAD
 const SYMBOL_MAP: Record<string, string> = {
   "XAUUSD": "GC=F",
   "XAGUSD": "SI=F",
@@ -38,6 +39,14 @@ export async function GET(req: NextRequest) {
   const yfTicker = SYMBOL_MAP[symbol] ?? "GC=F";
 
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yfTicker)}?interval=${interval}&range=${range}`;
+=======
+export async function GET(req: NextRequest) {
+  const tf = req.nextUrl.searchParams.get("tf") ?? "M15";
+  const interval = INTERVAL_MAP[tf] ?? "15m";
+  const range = RANGE_MAP[tf] ?? "5d";
+
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/GC%3DF?interval=${interval}&range=${range}`;
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 
   try {
     const res = await fetch(url, {
@@ -65,7 +74,11 @@ export async function GET(req: NextRequest) {
     const volumes: number[] = quote.volume ?? [];
 
     // Build candles, skip any with null values (market closed gaps)
+<<<<<<< HEAD
     const rawCandles = timestamps
+=======
+    const candles = timestamps
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
       .map((t, i) => ({
         time:   t,
         open:   opens[i],
@@ -74,6 +87,7 @@ export async function GET(req: NextRequest) {
         close:  closes[i],
         volume: volumes[i] ?? 0,
       }))
+<<<<<<< HEAD
       .filter((c) => c.open > 1 && c.high > 1 && c.low > 1 && c.close > 1);
 
     // Sanitize Yahoo Finance historical data
@@ -111,6 +125,9 @@ export async function GET(req: NextRequest) {
         candles.push(c);
         sizes.push(size);
     }
+=======
+      .filter((c) => c.open != null && c.close != null);
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 
     // For H4: aggregate 60m candles into 4h buckets
     if (tf === "H4") {
@@ -123,7 +140,11 @@ export async function GET(req: NextRequest) {
           open:   chunk[0].open,
           high:   Math.max(...chunk.map((c) => c.high)),
           low:    Math.min(...chunk.map((c) => c.low)),
+<<<<<<< HEAD
           close:  chunk.at(-1)!.close,
+=======
+          close:  chunk[chunk.length - 1].close,
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
           volume: chunk.reduce((s, c) => s + (c.volume ?? 0), 0),
         });
       }
@@ -141,7 +162,11 @@ export async function GET(req: NextRequest) {
           open:   chunk[0].open,
           high:   Math.max(...chunk.map((c) => c.high)),
           low:    Math.min(...chunk.map((c) => c.low)),
+<<<<<<< HEAD
           close:  chunk.at(-1)!.close,
+=======
+          close:  chunk[chunk.length - 1].close,
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
           volume: chunk.reduce((s, c) => s + (c.volume ?? 0), 0),
         });
       }

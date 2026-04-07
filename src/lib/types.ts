@@ -4,7 +4,10 @@
  */
 export interface TradeSignal {
   id?: string;
+<<<<<<< HEAD
   symbol?: string;
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
   timestamp?: string;
   direction: "BUY" | "SELL" | "HOLD";
   entry_price: number;
@@ -28,7 +31,10 @@ export interface TradeSignal {
 /** Adapts the mock-data camelCase Signal to the canonical TradeSignal */
 export function adaptMockSignal(s: {
   id?: string;
+<<<<<<< HEAD
   symbol?: string;
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
   direction: "BUY" | "SELL";
   entryPrice: number;
   stopLoss: number;
@@ -43,7 +49,10 @@ export function adaptMockSignal(s: {
 }): TradeSignal {
   return {
     id: s.id,
+<<<<<<< HEAD
     symbol: s.symbol,
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     timestamp: s.createdAt?.toISOString(),
     direction: s.direction,
     entry_price: s.entryPrice,

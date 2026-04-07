@@ -67,9 +67,12 @@ export default function SignalHistory({ signals }: SignalHistoryProps) {
                   >
                     {signal.direction}
                   </span>
+<<<<<<< HEAD
                   <span className="text-[10px] text-text-muted px-1.5 py-0.5 rounded-md bg-surface border border-white/5">
                     {(signal.symbol || "XAUUSD").toUpperCase()}
                   </span>
+=======
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
                   {!isHold && (
                     <span className="text-xs font-medium font-[family-name:var(--font-jetbrains-mono)]">
                       @ {formatPrice(signal.entry_price)}

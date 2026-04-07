@@ -38,8 +38,12 @@ export default function SignalCard({ signal, onExecute }: SignalCardProps) {
   const isHold  = signal.direction === "HOLD";
 
   const handleCopy = () => {
+<<<<<<< HEAD
     const symbol = (signal.symbol || "XAU/USD").toUpperCase();
     const text = `${signal.direction} ${symbol} @ ${formatPrice(signal.entry_price)}
+=======
+    const text = `${signal.direction} XAU/USD @ ${formatPrice(signal.entry_price)}
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 SL: ${formatPrice(signal.stop_loss)}
 TP1: ${formatPrice(signal.take_profit_1)}
 TP2: ${formatPrice(signal.take_profit_2)}
@@ -118,7 +122,11 @@ Reasoning: ${signal.reasoning}`;
                 >
                   {signal.direction}
                 </span>
+<<<<<<< HEAD
                 <span className="text-xs text-text-muted">{(signal.symbol || "XAU/USD").toUpperCase()}</span>
+=======
+                <span className="text-xs text-text-muted">XAU/USD</span>
+>>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
                 <span className="text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded-md">
                   {signal.trading_style}
                 </span>
