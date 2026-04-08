@@ -48,3 +48,6 @@ __pycache__/
 *.pyo
 /.ruff_cache/
 backend/venv/
+
+# temp
+tmp/
