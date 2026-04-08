@@ -34,24 +34,28 @@ export function useLivePrice() {
   const currentSymbol = (currentPrice?.symbol || "XAUUSD").toUpperCase();
   const activeSymbol = (targetSymbol || "XAUUSD").toUpperCase();
   const isSymbolMatch = isConnected && currentSymbol === activeSymbol;
+  
+  const [prevActiveSymbol, setPrevActiveSymbol] = useState(activeSymbol);
 
   // Extract primitives
   const bid = currentPrice?.bid ?? 0;
   const ask = currentPrice?.ask ?? 0;
   const time = currentPrice?.time ?? "";
 
-  // Reset session tracking when symbol changes
-  useEffect(() => {
+  // Reset session tracking when symbol changes (React 18+ idiom)
+  if (activeSymbol !== prevActiveSymbol) {
+    setPrevActiveSymbol(activeSymbol);
     setSessionData(null);
-    prevPriceRef.current = null;
-  }, [activeSymbol]);
+  }
 
-  // Update session data and tick effect
   useEffect(() => {
     if (!isSymbolMatch || bid <= 1) return;
 
     setSessionData(prev => {
-      if (!prev) return { open: bid, high: bid, low: bid };
+      if (!prev) {
+        prevPriceRef.current = null;
+        return { open: bid, high: bid, low: bid };
+      }
       if (prev.open === bid && prev.high >= bid && prev.low <= bid) return prev; // Avoid unnecessary updates
       return {
         open: prev.open,
@@ -75,14 +79,17 @@ export function useLivePrice() {
   // Derive all data synchronously
   const result = useMemo(() => {
     if (!isConnected || !isSymbolMatch || bid <= 1 || !sessionData) {
+      let error: string | null = null;
+      if (!isConnected) {
+        error = "MT5 Bridge Offline";
+      } else if (!isSymbolMatch) {
+        error = `Symbol Mismatch (Midas: ${activeSymbol}, MT5: ${currentSymbol})`;
+      }
+
       return {
         data: null as LivePrice | null,
         loading: isConnected && isSymbolMatch && bid > 1 && !sessionData,
-        error: !isConnected 
-          ? "MT5 Bridge Offline" 
-          : !isSymbolMatch 
-            ? `Waiting for ${activeSymbol} data...` 
-            : "Waiting for valid quote",
+        error,
         tick,
       };
     }
@@ -105,7 +112,7 @@ export function useLivePrice() {
       error: null as string | null,
       tick,
     };
-  }, [bid, ask, time, isConnected, isSymbolMatch, activeSymbol, sessionData, tick]);
+  }, [bid, ask, time, isConnected, isSymbolMatch, activeSymbol, sessionData, tick, currentSymbol]);
 
   return result;
 }

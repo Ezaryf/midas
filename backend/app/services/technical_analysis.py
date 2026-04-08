@@ -1,10 +1,7 @@
 """
 Real technical analysis using pandas-ta.
 Fetches OHLCV data from Yahoo Finance and computes indicators.
-<<<<<<< HEAD
 Supports multiple symbols via configurable Yahoo tickers.
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 """
 import logging
 import requests
@@ -13,7 +10,6 @@ import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
 
-<<<<<<< HEAD
 # Symbol → Yahoo Finance ticker mapping
 SYMBOL_TICKERS = {
     "XAUUSD": "GC%3DF",       # Gold Futures
@@ -40,17 +36,6 @@ def fetch_ohlcv(interval: str = "15m", range_: str = "5d", symbol: str = "XAUUSD
         url = _get_yahoo_url(symbol)
         r = requests.get(
             url,
-=======
-YAHOO_URL = "https://query2.finance.yahoo.com/v8/finance/chart/GC%3DF"
-HEADERS   = {"User-Agent": "Mozilla/5.0"}
-
-
-def fetch_ohlcv(interval: str = "15m", range_: str = "5d") -> pd.DataFrame | None:
-    """Fetch gold futures OHLCV from Yahoo Finance."""
-    try:
-        r = requests.get(
-            YAHOO_URL,
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
             params={"interval": interval, "range": range_},
             headers=HEADERS,
             timeout=10,
@@ -73,11 +58,7 @@ def fetch_ohlcv(interval: str = "15m", range_: str = "5d") -> pd.DataFrame | Non
         return df
 
     except Exception as e:
-<<<<<<< HEAD
         logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
-=======
-        logger.error(f"Failed to fetch OHLCV: {e}")
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         return None
 
 
@@ -111,34 +92,21 @@ def analyze_trend(df: pd.DataFrame) -> str:
     return "NEUTRAL"
 
 
-<<<<<<< HEAD
 def get_latest_indicators(interval: str = "15m", symbol: str = "XAUUSD") -> dict:
-=======
-def get_latest_indicators(interval: str = "15m") -> dict:
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     """
     Fetches real OHLCV data and returns the latest indicator values.
     Falls back to safe defaults if data is unavailable.
     """
-<<<<<<< HEAD
     df = fetch_ohlcv(interval=interval, range_="5d", symbol=symbol)
     if df is None or len(df) < 30:
         logger.warning(f"Insufficient OHLCV data for {symbol} — using fallback indicators.")
-=======
-    df = fetch_ohlcv(interval=interval, range_="5d")
-    if df is None or len(df) < 30:
-        logger.warning("Insufficient OHLCV data — using fallback indicators.")
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         return {
             "RSI_14":       50.0,
             "MACD_12_26_9": 0.0,
             "ATRr_14":      12.0,
             "trend":        "NEUTRAL",
             "current_price": 4750.0,
-<<<<<<< HEAD
             "symbol":       symbol,
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         }
 
     df = compute_indicators(df)
@@ -154,8 +122,5 @@ def get_latest_indicators(interval: str = "15m") -> dict:
         "EMA_50":        round(float(latest.get("EMA_50", 0)),     2),
         "trend":         trend,
         "current_price": round(float(latest["close"]),             2),
-<<<<<<< HEAD
         "symbol":        symbol,
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     }

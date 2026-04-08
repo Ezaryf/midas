@@ -36,7 +36,7 @@ export default function SignalHistory({ signals }: SignalHistoryProps) {
 
         return (
           <div
-            key={signal.id ?? i}
+            key={`${signal.id || i}-${signal.timestamp}`}
             className="flex items-center justify-between rounded-xl bg-surface/50 hover:bg-surface px-4 py-3 transition-colors"
           >
             {/* Direction + Price */}
@@ -67,14 +67,11 @@ export default function SignalHistory({ signals }: SignalHistoryProps) {
                   >
                     {signal.direction}
                   </span>
-<<<<<<< HEAD
                   <span className="text-[10px] text-text-muted px-1.5 py-0.5 rounded-md bg-surface border border-white/5">
                     {(signal.symbol || "XAUUSD").toUpperCase()}
                   </span>
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
                   {!isHold && (
-                    <span className="text-xs font-medium font-[family-name:var(--font-jetbrains-mono)]">
+                    <span className="text-xs font-medium font-(family-name:--font-jetbrains-mono)">
                       @ {formatPrice(signal.entry_price)}
                     </span>
                   )}
@@ -89,7 +86,7 @@ export default function SignalHistory({ signals }: SignalHistoryProps) {
             <div className="flex items-center gap-3">
               {signal.outcome !== undefined && signal.outcome !== null && (
                 <span
-                  className={`text-xs font-bold font-[family-name:var(--font-jetbrains-mono)] ${
+                  className={`text-xs font-bold font-(family-name:--font-jetbrains-mono) ${
                     signal.outcome >= 0 ? "text-bullish" : "text-bearish"
                   }`}
                 >

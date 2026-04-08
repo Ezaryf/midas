@@ -38,12 +38,8 @@ export default function SignalCard({ signal, onExecute }: SignalCardProps) {
   const isHold  = signal.direction === "HOLD";
 
   const handleCopy = () => {
-<<<<<<< HEAD
     const symbol = (signal.symbol || "XAU/USD").toUpperCase();
     const text = `${signal.direction} ${symbol} @ ${formatPrice(signal.entry_price)}
-=======
-    const text = `${signal.direction} XAU/USD @ ${formatPrice(signal.entry_price)}
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 SL: ${formatPrice(signal.stop_loss)}
 TP1: ${formatPrice(signal.take_profit_1)}
 TP2: ${formatPrice(signal.take_profit_2)}
@@ -122,11 +118,7 @@ Reasoning: ${signal.reasoning}`;
                 >
                   {signal.direction}
                 </span>
-<<<<<<< HEAD
                 <span className="text-xs text-text-muted">{(signal.symbol || "XAU/USD").toUpperCase()}</span>
-=======
-                <span className="text-xs text-text-muted">XAU/USD</span>
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
                 <span className="text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded-md">
                   {signal.trading_style}
                 </span>
@@ -165,7 +157,7 @@ Reasoning: ${signal.reasoning}`;
                 strokeLinecap="round"
               />
             </svg>
-            <span className="absolute text-xs font-bold font-[family-name:var(--font-jetbrains-mono)]">
+            <span className="absolute text-xs font-bold font-(family-name:--font-jetbrains-mono)">
               {Math.round(signal.confidence)}
             </span>
           </div>
@@ -181,7 +173,7 @@ Reasoning: ${signal.reasoning}`;
                   Entry
                 </span>
               </div>
-              <p className="text-sm font-bold font-[family-name:var(--font-jetbrains-mono)] text-gold-light">
+              <p className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-gold-light">
                 {formatPrice(signal.entry_price)}
               </p>
             </div>
@@ -192,7 +184,7 @@ Reasoning: ${signal.reasoning}`;
                   Stop Loss
                 </span>
               </div>
-              <p className="text-sm font-bold font-[family-name:var(--font-jetbrains-mono)] text-bearish">
+              <p className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-bearish">
                 {formatPrice(signal.stop_loss)}
               </p>
             </div>
@@ -203,7 +195,7 @@ Reasoning: ${signal.reasoning}`;
                   TP1
                 </span>
               </div>
-              <p className="text-sm font-bold font-[family-name:var(--font-jetbrains-mono)] text-bullish">
+              <p className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-bullish">
                 {formatPrice(signal.take_profit_1)}
               </p>
               <p className="text-[10px] text-text-muted mt-0.5">
@@ -218,7 +210,7 @@ Reasoning: ${signal.reasoning}`;
                   TP2
                 </span>
               </div>
-              <p className="text-sm font-bold font-[family-name:var(--font-jetbrains-mono)] text-bullish">
+              <p className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-bullish">
                 {formatPrice(signal.take_profit_2)}
               </p>
               <p className="text-[10px] text-text-muted mt-0.5">
@@ -279,7 +271,7 @@ Reasoning: ${signal.reasoning}`;
               <button
                 onClick={handleExecute}
                 disabled={executing}
-                className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-gold-dark via-gold to-gold-light px-4 py-2.5 text-sm font-semibold text-background hover:shadow-lg hover:shadow-gold/20 transition-all active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none"
+                className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-linear-to-r from-gold-dark via-gold to-gold-light px-4 py-2.5 text-sm font-semibold text-background hover:shadow-lg hover:shadow-gold/20 transition-all active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none"
               >
                 {executing ? (
                   <><Loader2 className="h-4 w-4 animate-spin" />Sending...</>

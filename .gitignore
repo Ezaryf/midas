@@ -41,3 +41,10 @@ yarn-error.log*
 next-env.d.ts
 
 *.md
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+/.ruff_cache/
+backend/venv/

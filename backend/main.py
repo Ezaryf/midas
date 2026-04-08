@@ -33,7 +33,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-<<<<<<< HEAD
 # CORS: Use env-configured origins in production, wildcard only in development
 _cors_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000")
 ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
@@ -41,11 +40,6 @@ ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if os.getenv("ENV", "development") == "development" else ALLOWED_ORIGINS,
-=======
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,7 +49,6 @@ app.include_router(mt5_router, prefix="/ws")
 app.include_router(api_router, prefix="/api")
 
 
-<<<<<<< HEAD
 # ── Health Check Endpoints (K8s-compatible) ──────────────────────────────────
 
 @app.get("/health", tags=["health"])
@@ -112,8 +105,3 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, reload_dirs=["app"])
 
-=======
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, reload_dirs=["app"])
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1

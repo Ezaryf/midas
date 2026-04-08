@@ -29,11 +29,7 @@ class RiskConfig:
         
         # Margin requirements
         self.min_margin_level = float(os.getenv("MIN_MARGIN_LEVEL", "200.0"))  # 200%
-<<<<<<< HEAD
         self.min_free_margin = float(os.getenv("MIN_FREE_MARGIN", "20.0"))  # $20 buffer (reduced from 1000 to allow small lots)
-=======
-        self.min_free_margin = float(os.getenv("MIN_FREE_MARGIN", "1000.0"))  # $1000
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         
         # Correlation
         self.allow_hedging = os.getenv("ALLOW_HEDGING", "false").lower() == "true"
@@ -171,11 +167,7 @@ class RiskManager:
     
     # ── Risk Checks ───────────────────────────────────────────────────────────
     
-<<<<<<< HEAD
     def can_open_position(self, direction: str = "BUY", symbol: str = None, volume: float = None, price: float = None) -> tuple[bool, str]:
-=======
-    def can_open_position(self, direction: str = "BUY") -> tuple[bool, str]:
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         """
         Check if opening a new position is allowed.
         Returns (allowed: bool, reason: str)
@@ -212,7 +204,6 @@ class RiskManager:
             return False, f"Margin level too low: {account['margin_level']:.1f}% < {self.config.min_margin_level}%"
         
         # 6. Check free margin
-<<<<<<< HEAD
         free_margin = account.get("free_margin", 0)
         
         if symbol and volume and price:
@@ -230,10 +221,6 @@ class RiskManager:
             # Legacy check without symbol/volume 
             if free_margin < self.config.min_free_margin:
                 return False, f"Insufficient free margin buffer: ${free_margin:.2f} < req buffer ${self.config.min_free_margin:.2f}"
-=======
-        if account.get("free_margin", 0) < self.config.min_free_margin:
-            return False, f"Insufficient free margin: ${account['free_margin']:.2f} < ${self.config.min_free_margin:.2f}"
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         
         # 7. Check drawdown
         balance = account.get("balance", 0)
@@ -293,12 +280,11 @@ class RiskManager:
                 # Check if high-impact event within blackout window
                 if event.get("impact") == "High" and abs(time_until) < blackout_window:
                     return True, f"High-impact news in {time_until.seconds // 60} minutes: {event.get('title')}"
-            except:
+            except (ValueError, TypeError, KeyError):
                 continue
         
         return False, "OK"
     
-<<<<<<< HEAD
     # ── Per-Position Risk ───────────────────────────────────────────────────────
 
     def get_position_level_risk(self) -> list[dict]:
@@ -343,18 +329,6 @@ class RiskManager:
         # Real-time drawdown from live positions
         total_unrealized_pnl = sum(p["pnl_dollars"] for p in position_risk)
         worst_position_pnl = min((p["pnl_dollars"] for p in position_risk), default=0)
-=======
-    # ── Risk Reporting ────────────────────────────────────────────────────────
-    
-    def get_risk_summary(self) -> dict:
-        """Get comprehensive risk status summary"""
-        account = self.get_account_info()
-        daily_stats = self.get_daily_stats()
-        open_positions = self.get_open_positions()
-        
-        can_trade, trade_reason = self.can_open_position()
-        should_close, close_reason = self.should_close_all_positions()
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         
         return {
             "can_trade": can_trade,
@@ -381,12 +355,9 @@ class RiskManager:
                 "open": len(open_positions),
                 "max": self.config.max_concurrent_positions,
                 "remaining": self.config.max_concurrent_positions - len(open_positions),
-<<<<<<< HEAD
                 "details": position_risk,
                 "unrealized_pnl": round(total_unrealized_pnl, 2),
                 "worst_position_pnl": round(worst_position_pnl, 2),
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
             },
             
             "limits": {

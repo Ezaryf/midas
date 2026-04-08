@@ -6,21 +6,22 @@ const INTERVAL_MAP: Record<string, string> = {
   M5:  "5m",
   M15: "15m",
   H1:  "60m",
-  H4:  "1h",   // Yahoo doesn't have 4h — we'll aggregate client-side
+  H2:  "60m", // Aggregate 2x 60m
+  H4:  "60m", // Aggregate 4x 60m
   D1:  "1d",
 };
 
 const RANGE_MAP: Record<string, string> = {
-  M1:  "1d",
-  M3:  "1d",
-  M5:  "5d",
-  M15: "5d",
-  H1:  "1mo",
-  H4:  "3mo",
-  D1:  "1y",
+  M1:  "5d",  // Max 7d for 1m
+  M3:  "5d", 
+  M5:  "1mo", // Max 60d for 5m
+  M15: "1mo",
+  H1:  "3mo",
+  H2:  "3mo",
+  H4:  "6mo",
+  D1:  "2y",
 };
 
-<<<<<<< HEAD
 const SYMBOL_MAP: Record<string, string> = {
   "XAUUSD": "GC=F",
   "XAGUSD": "SI=F",
@@ -39,14 +40,6 @@ export async function GET(req: NextRequest) {
   const yfTicker = SYMBOL_MAP[symbol] ?? "GC=F";
 
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yfTicker)}?interval=${interval}&range=${range}`;
-=======
-export async function GET(req: NextRequest) {
-  const tf = req.nextUrl.searchParams.get("tf") ?? "M15";
-  const interval = INTERVAL_MAP[tf] ?? "15m";
-  const range = RANGE_MAP[tf] ?? "5d";
-
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/GC%3DF?interval=${interval}&range=${range}`;
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 
   try {
     const res = await fetch(url, {
@@ -74,11 +67,7 @@ export async function GET(req: NextRequest) {
     const volumes: number[] = quote.volume ?? [];
 
     // Build candles, skip any with null values (market closed gaps)
-<<<<<<< HEAD
     const rawCandles = timestamps
-=======
-    const candles = timestamps
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
       .map((t, i) => ({
         time:   t,
         open:   opens[i],
@@ -87,7 +76,6 @@ export async function GET(req: NextRequest) {
         close:  closes[i],
         volume: volumes[i] ?? 0,
       }))
-<<<<<<< HEAD
       .filter((c) => c.open > 1 && c.high > 1 && c.low > 1 && c.close > 1);
 
     // Sanitize Yahoo Finance historical data
@@ -125,9 +113,6 @@ export async function GET(req: NextRequest) {
         candles.push(c);
         sizes.push(size);
     }
-=======
-      .filter((c) => c.open != null && c.close != null);
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 
     // For H4: aggregate 60m candles into 4h buckets
     if (tf === "H4") {
@@ -140,11 +125,25 @@ export async function GET(req: NextRequest) {
           open:   chunk[0].open,
           high:   Math.max(...chunk.map((c) => c.high)),
           low:    Math.min(...chunk.map((c) => c.low)),
-<<<<<<< HEAD
           close:  chunk.at(-1)!.close,
-=======
-          close:  chunk[chunk.length - 1].close,
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
+          volume: chunk.reduce((s, c) => s + (c.volume ?? 0), 0),
+        });
+      }
+      return NextResponse.json({ candles: aggregated });
+    }
+
+    // For H2: aggregate 60m candles into 2h buckets
+    if (tf === "H2") {
+      const aggregated: typeof candles = [];
+      for (let i = 0; i < candles.length; i += 2) {
+        const chunk = candles.slice(i, i + 2);
+        if (chunk.length === 0) continue;
+        aggregated.push({
+          time:   chunk[0].time,
+          open:   chunk[0].open,
+          high:   Math.max(...chunk.map((c) => c.high)),
+          low:    Math.min(...chunk.map((c) => c.low)),
+          close:  chunk.at(-1)!.close,
           volume: chunk.reduce((s, c) => s + (c.volume ?? 0), 0),
         });
       }
@@ -162,11 +161,7 @@ export async function GET(req: NextRequest) {
           open:   chunk[0].open,
           high:   Math.max(...chunk.map((c) => c.high)),
           low:    Math.min(...chunk.map((c) => c.low)),
-<<<<<<< HEAD
           close:  chunk.at(-1)!.close,
-=======
-          close:  chunk[chunk.length - 1].close,
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
           volume: chunk.reduce((s, c) => s + (c.volume ?? 0), 0),
         });
       }

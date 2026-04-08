@@ -67,7 +67,7 @@ class PositionMonitor:
     
     # ── Lifecycle ─────────────────────────────────────────────────────────────
     
-    async def start(self):
+    def start(self):
         """Start monitoring positions"""
         if self.running:
             logger.warning("Position monitor already running")
@@ -88,7 +88,7 @@ class PositionMonitor:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                raise
         
         logger.info("Position monitor stopped")
     
@@ -99,7 +99,7 @@ class PositionMonitor:
                 await self._check_all_positions()
                 await asyncio.sleep(self.config.monitor_interval_seconds)
             except asyncio.CancelledError:
-                break
+                raise
             except Exception as e:
                 logger.error(f"Error in position monitor loop: {e}")
                 await asyncio.sleep(5)
@@ -130,8 +130,6 @@ class PositionMonitor:
         
         current_price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
         entry_price = pos.price_open
-        sl = pos.sl
-        tp = pos.tp
         
         # Calculate profit in pips
         if pos.type == mt5.ORDER_TYPE_BUY:
@@ -141,28 +139,28 @@ class PositionMonitor:
         
         # 1. Check for partial close at TP1
         if self.config.partial_close_enabled and ticket not in self._partial_closed:
-            if await self._check_tp1_hit(pos, current_price, profit_pips):
-                await self._partial_close_position(pos)
+            if self._check_tp1_hit(pos, current_price):
+                self._partial_close_position(pos)
                 self._partial_closed.add(ticket)
         
         # 2. Move SL to break-even after partial close
         if self.config.breakeven_enabled and ticket in self._partial_closed and ticket not in self._breakeven_set:
-            await self._move_to_breakeven(pos, entry_price)
+            self._move_to_breakeven(pos, entry_price)
             self._breakeven_set.add(ticket)
         
         # 3. Trailing stop
         if self.config.trailing_stop_enabled and ticket in self._breakeven_set:
-            await self._update_trailing_stop(pos, current_price, profit_pips)
+            self._update_trailing_stop(pos, current_price, profit_pips)
         
         # 4. Time-based exits
         if self.config.time_exit_enabled:
-            should_exit, reason = await self._should_time_exit(pos)
+            should_exit, reason = self._should_time_exit(pos)
             if should_exit:
-                await self._close_position(pos, reason)
+                self._close_position(pos, reason)
     
     # ── Partial Close ─────────────────────────────────────────────────────────
     
-    async def _check_tp1_hit(self, pos, current_price: float, profit_pips: float) -> bool:
+    def _check_tp1_hit(self, pos, current_price: float) -> bool:
         """Check if TP1 has been hit"""
         # Estimate TP1 (assume it's halfway to TP)
         entry = pos.price_open
@@ -179,7 +177,7 @@ class PositionMonitor:
             tp1_estimate = entry - (entry - tp) * 0.5
             return current_price <= tp1_estimate
     
-    async def _partial_close_position(self, pos):
+    def _partial_close_position(self, pos):
         """Close partial position (default 50%)"""
         close_volume = round(pos.volume * (self.config.partial_close_percent / 100), 2)
         
@@ -217,7 +215,7 @@ class PositionMonitor:
     
     # ── Break-Even ────────────────────────────────────────────────────────────
     
-    async def _move_to_breakeven(self, pos, entry_price: float):
+    def _move_to_breakeven(self, pos, entry_price: float):
         """Move stop loss to break-even + buffer"""
         # Calculate break-even with buffer
         buffer_points = self.config.breakeven_buffer_pips / 100
@@ -251,7 +249,7 @@ class PositionMonitor:
     
     # ── Trailing Stop ─────────────────────────────────────────────────────────
     
-    async def _update_trailing_stop(self, pos, current_price: float, profit_pips: float):
+    def _update_trailing_stop(self, pos, current_price: float, profit_pips: float):
         """Update trailing stop if price moved favorably"""
         ticket = pos.ticket
         
@@ -281,7 +279,6 @@ class PositionMonitor:
         if pos.type == mt5.ORDER_TYPE_SELL and new_sl >= pos.sl:
             return
         
-<<<<<<< HEAD
         # Profit-floor guard: never trail SL into a loss
         # Trailing should only lock in profit, never lock in loss
         if pos.type == mt5.ORDER_TYPE_BUY and new_sl < pos.price_open:
@@ -291,8 +288,6 @@ class PositionMonitor:
             logger.debug(f"Trailing SL {new_sl:.2f} above entry {pos.price_open:.2f} — clamping to entry")
             new_sl = pos.price_open
         
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
         # Modify position
         modify_request = {
             "action": mt5.TRADE_ACTION_SLTP,
@@ -312,7 +307,7 @@ class PositionMonitor:
     
     # ── Time-Based Exits ──────────────────────────────────────────────────────
     
-    async def _should_time_exit(self, pos) -> tuple[bool, str]:
+    def _should_time_exit(self, _pos) -> tuple[bool, str]:
         """Check if position should be closed due to time"""
         now = datetime.now()
         
@@ -329,7 +324,7 @@ class PositionMonitor:
         
         return False, ""
     
-    async def _close_position(self, pos, reason: str):
+    def _close_position(self, pos, reason: str):
         """Close position completely"""
         close_request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -353,7 +348,7 @@ class PositionMonitor:
                     tick = mt5.symbol_info_tick(pos.symbol)
                     close_price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
                     
-                    await db.update_order_close(
+                    db.update_order_close(
                         ticket=pos.ticket,
                         close_price=close_price,
                         profit=result.profit,
@@ -373,17 +368,17 @@ class PositionMonitor:
     
     # ── Manual Controls ───────────────────────────────────────────────────────
     
-    async def close_position_manual(self, ticket: int) -> dict:
+    def close_position_manual(self, ticket: int) -> dict:
         """Manually close a specific position"""
         positions = mt5.positions_get(ticket=ticket)
         if not positions:
             return {"status": "error", "message": f"Position #{ticket} not found"}
         
         pos = positions[0]
-        await self._close_position(pos, "MANUAL")
+        self._close_position(pos, "MANUAL")
         return {"status": "ok", "message": f"Position #{ticket} closed"}
     
-    async def modify_position_manual(self, ticket: int, new_sl: float, new_tp: float) -> dict:
+    def modify_position_manual(self, ticket: int, new_sl: float, new_tp: float) -> dict:
         """Manually modify position SL/TP"""
         positions = mt5.positions_get(ticket=ticket)
         if not positions:
@@ -428,7 +423,6 @@ class PositionMonitor:
         }
 
 
-<<<<<<< HEAD
 class _NullPositionMonitor(PositionMonitor):
     """
     Null Object pattern — safe no-op monitor when MT5 is unavailable.
@@ -446,19 +440,19 @@ class _NullPositionMonitor(PositionMonitor):
         self._trailing_active: dict[int, float] = {}
         logger.info("NullPositionMonitor active — MT5 unavailable, all operations are no-ops")
 
-    async def start(self):
+    def start(self):
         logger.debug("NullPositionMonitor.start() — no-op")
 
-    async def stop(self):
+    def stop(self):
         logger.debug("NullPositionMonitor.stop() — no-op")
 
     async def _check_all_positions(self):
-        pass
+        pass  # Intentionally empty — NullObject pattern, no positions to check
 
-    async def close_position_manual(self, ticket: int) -> dict:
+    def close_position_manual(self, ticket: int) -> dict:
         return {"status": "error", "message": "MT5 not available — position monitor inactive"}
 
-    async def modify_position_manual(self, ticket: int, new_sl: float, new_tp: float) -> dict:
+    def modify_position_manual(self, ticket: int, new_sl: float, new_tp: float) -> dict:
         return {"status": "error", "message": "MT5 not available — position monitor inactive"}
 
     def get_status(self) -> dict:
@@ -478,41 +472,25 @@ class _NullPositionMonitor(PositionMonitor):
         }
 
 
-=======
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
 # Global instance
 _position_monitor: Optional[PositionMonitor] = None
 
 
-<<<<<<< HEAD
 def get_position_monitor() -> PositionMonitor:
     """Get or create global position monitor instance.
     Always returns a non-None monitor — uses NullPositionMonitor when MT5 is unavailable.
     """
     global _position_monitor
 
-=======
-def get_position_monitor() -> Optional[PositionMonitor]:
-    """Get or create global position monitor instance"""
-    global _position_monitor
-    
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     if _position_monitor is None:
         try:
             if mt5.terminal_info() is not None:
                 _position_monitor = PositionMonitor()
             else:
-<<<<<<< HEAD
                 logger.warning("MT5 not initialized — using NullPositionMonitor")
                 _position_monitor = _NullPositionMonitor()
         except Exception as e:
             logger.error(f"Failed to initialize position monitor: {e}")
             _position_monitor = _NullPositionMonitor()
 
-=======
-                logger.warning("MT5 not initialized — position monitor unavailable")
-        except Exception as e:
-            logger.error(f"Failed to initialize position monitor: {e}")
-    
->>>>>>> 43c9f1b194f748ead11d6ed556a8f6ef5941c6e1
     return _position_monitor

@@ -14,6 +14,7 @@ import {
   HistogramSeries,
   LineSeries,
 } from "lightweight-charts";
+import { Settings2, Maximize, TrendingUp, BarChart2 } from "lucide-react";
 
 export interface ChartLine {
   price: number;
@@ -106,6 +107,12 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
 
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
+  // ── Chart Controls State ──────────────────────────────────────────────────
+  const [autoScale, setAutoScale]   = useState(true);
+  const [showEMA, setShowEMA]       = useState(true);
+  const [showRSI, setShowRSI]       = useState(true);
+  const [showVolume, setShowVolume] = useState(true);
+
   // ── Init ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
@@ -131,7 +138,7 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       rightPriceScale: { 
         borderColor: "rgba(39,39,42,0.5)", 
         scaleMargins: { top: 0.05, bottom: 0.35 },
-        autoScale: true,
+        autoScale: autoScale,
       },
       timeScale:       { borderColor: "rgba(39,39,42,0.5)", timeVisible: true, secondsVisible: false },
     });
@@ -202,9 +209,19 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       const volBar = param.seriesData.get(volume) as { value: number } | undefined;
       const change    = bar.close - bar.open;
       const changePct = (change / bar.open) * 100;
-      const ts = typeof bar.time === "number"
-        ? new Date(bar.time * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-        : (bar.time as any).year ? `${(bar.time as any).year}-${(bar.time as any).month}-${(bar.time as any).day}` : String(bar.time);
+      let ts = "";
+      if (typeof bar.time === "number") {
+        ts = new Date(bar.time * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      } else if (typeof bar.time === "string") {
+        ts = bar.time;
+      } else {
+        const busDay = bar.time as { year: number; month: number; day: number };
+        if (busDay.year) {
+          ts = `${busDay.year}-${busDay.month}-${busDay.day}`;
+        } else {
+          ts = String(bar.time);
+        }
+      }
 
       setTooltip({
         time: ts, open: bar.open, high: bar.high, low: bar.low, close: bar.close,
@@ -238,7 +255,30 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       ema9Ref.current = ema21Ref.current = ema50Ref.current = rsiRef.current = null;
       fittedRef.current = false;
     };
-  }, [height]);
+  }, [height, autoScale]); // Added autoScale so it doesn't revert to stale value on container resize
+
+  // ── Apply Option Toggles ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!chartRef.current) return;
+    chartRef.current.priceScale("right").applyOptions({ autoScale });
+  }, [autoScale]);
+
+  useEffect(() => {
+    ema9Ref.current?.applyOptions({ visible: showEMA });
+    ema21Ref.current?.applyOptions({ visible: showEMA });
+    ema50Ref.current?.applyOptions({ visible: showEMA });
+  }, [showEMA]);
+
+  useEffect(() => {
+    rsiRef.current?.applyOptions({ visible: showRSI });
+    // Price lines don't support `visible` — toggle by setting color transparency
+    rsiOB.current?.applyOptions({ color: showRSI ? "rgba(239,68,68,0.4)" : "rgba(0,0,0,0)" });
+    rsiOS.current?.applyOptions({ color: showRSI ? "rgba(34,197,94,0.4)" : "rgba(0,0,0,0)" });
+  }, [showRSI]);
+
+  useEffect(() => {
+    volumeRef.current?.applyOptions({ visible: showVolume });
+  }, [showVolume]);
 
   // ── Update data ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -295,26 +335,67 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
   return (
     <div className="relative w-full h-full select-none">
       {/* EMA legend */}
-      <div className="absolute top-2 left-2 z-10 flex items-center gap-3 pointer-events-none">
-        {[
-          { label: "EMA 9",  color: "#F59E0B" },
-          { label: "EMA 21", color: "#3B82F6" },
-          { label: "EMA 50", color: "#A855F7" },
-        ].map(({ label, color }) => (
-          <div key={label} className="flex items-center gap-1">
-            <span className="h-px w-4 inline-block" style={{ backgroundColor: color }} />
-            <span className="text-[9px] font-medium" style={{ color }}>{label}</span>
-          </div>
-        ))}
-        <div className="flex items-center gap-1 ml-2">
-          <span className="text-[9px] text-text-muted">RSI 14</span>
+      {showEMA && (
+        <div className="absolute top-2 left-2 z-10 flex items-center gap-3 pointer-events-none">
+          {[
+            { label: "EMA 9",  color: "#F59E0B" },
+            { label: "EMA 21", color: "#3B82F6" },
+            { label: "EMA 50", color: "#A855F7" },
+          ].map(({ label, color }) => (
+            <div key={label} className="flex items-center gap-1">
+              <span className="h-px w-4 inline-block" style={{ backgroundColor: color }} />
+              <span className="text-[9px] font-medium" style={{ color }}>{label}</span>
+            </div>
+          ))}
+          {showRSI && (
+            <div className="flex items-center gap-1 ml-2">
+              <span className="text-[9px] text-text-muted">RSI 14</span>
+            </div>
+          )}
         </div>
+      )}
+
+      {/* Chart Controls */}
+      <div className="absolute top-2 right-12 z-20 flex items-center gap-1.5 p-1 glass rounded-md border border-border/50">
+        <button
+          onClick={() => setAutoScale(!autoScale)}
+          className={`px-2 py-1 flex items-center gap-1 rounded text-[10px] font-medium transition-colors ${autoScale ? "bg-midas-gold/20 text-midas-gold" : "hover:bg-surface-elevated text-text-muted"}`}
+          title="Auto-Scale Y-Axis"
+        >
+          <Maximize size={12} />
+          AUTO
+        </button>
+        <div className="w-px h-4 bg-border/50 mx-0.5" />
+        <button
+          onClick={() => setShowEMA(!showEMA)}
+          className={`px-2 py-1 flex items-center gap-1 rounded text-[10px] font-medium transition-colors ${showEMA ? "bg-midas-gold/20 text-midas-gold" : "hover:bg-surface-elevated text-text-muted"}`}
+          title="Toggle EMAs"
+        >
+          <TrendingUp size={12} />
+          EMA
+        </button>
+        <button
+          onClick={() => setShowRSI(!showRSI)}
+          className={`px-2 py-1 flex items-center gap-1 rounded text-[10px] font-medium transition-colors ${showRSI ? "bg-midas-gold/20 text-midas-gold" : "hover:bg-surface-elevated text-text-muted"}`}
+          title="Toggle RSI"
+        >
+          <Settings2 size={12} />
+          RSI
+        </button>
+        <button
+          onClick={() => setShowVolume(!showVolume)}
+          className={`px-2 py-1 flex items-center gap-1 rounded text-[10px] font-medium transition-colors ${showVolume ? "bg-midas-gold/20 text-midas-gold" : "hover:bg-surface-elevated text-text-muted"}`}
+          title="Toggle Volume"
+        >
+          <BarChart2 size={12} />
+          VOL
+        </button>
       </div>
 
       {/* OHLCV Tooltip */}
       {tooltip && (
         <div
-          className="absolute z-20 pointer-events-none glass rounded-lg px-3 py-2 text-[10px] font-[family-name:var(--font-jetbrains-mono)] shadow-lg"
+          className="absolute z-20 pointer-events-none glass rounded-lg px-3 py-2 text-[10px] font-(family-name:--font-jetbrains-mono) shadow-lg"
           style={{
             left: tooltip.x > tooltip.containerWidth / 2 ? tooltip.x - 180 : tooltip.x + 12,
             top:  Math.max(4, tooltip.y - 60),

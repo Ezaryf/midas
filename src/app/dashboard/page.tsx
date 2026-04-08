@@ -33,10 +33,12 @@ const TradingViewChart = dynamic(
 
 type RightTab = "news" | "calendar" | "history";
 
+type TradingStyle = "Scalper" | "Intraday" | "Swing";
+
 export default function DashboardPage() {
   // Persist timeframe & tradingStyle in localStorage so they survive navigation
   const [timeframe, setTimeframeRaw] = useState<Timeframe>("H2");
-  const [tradingStyle, setTradingStyleRaw] = useState<"Scalper" | "Intraday" | "Swing">("Scalper");
+  const [tradingStyle, setTradingStyleRaw] = useState<TradingStyle>("Scalper");
   const [styleChanging, setStyleChanging] = useState(false);
   const [rightTab, setRightTab]       = useState<RightTab>("news");
   const [rightOpen, setRightOpen]     = useState(true);
@@ -50,7 +52,7 @@ export default function DashboardPage() {
         const savedTf = localStorage.getItem("midas_timeframe") as Timeframe | null;
         if (savedTf && ["M1","M3","M5","M15","H1","H4"].includes(savedTf)) setTimeframeRaw(savedTf);
         
-        const savedTs = localStorage.getItem("midas_trading_style") as "Scalper" | "Intraday" | "Swing" | null;
+        const savedTs = localStorage.getItem("midas_trading_style") as TradingStyle | null;
         if (savedTs && ["Scalper","Intraday","Swing"].includes(savedTs)) setTradingStyleRaw(savedTs);
       } catch {}
     });
@@ -62,7 +64,7 @@ export default function DashboardPage() {
     try { localStorage.setItem("midas_timeframe", tf); } catch { /* ignore */ }
   }, []);
 
-  const setTradingStyle = useCallback((style: "Scalper" | "Intraday" | "Swing") => {
+  const setTradingStyle = useCallback((style: TradingStyle) => {
     setTradingStyleRaw(style);
     try { localStorage.setItem("midas_trading_style", style); } catch { /* ignore */ }
   }, []);
@@ -105,7 +107,7 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleStyleChange = useCallback(async (style: "Scalper" | "Intraday" | "Swing") => {
+  const handleStyleChange = useCallback(async (style: TradingStyle) => {
     if (style === tradingStyle) return;
     setStyleChanging(true);
     setTradingStyle(style);
@@ -263,7 +265,7 @@ export default function DashboardPage() {
               <div className="flex h-7 w-7 items-center justify-center rounded bg-gold/10 border border-gold/20 group-hover:border-gold/40 transition-colors">
                 <TrendingUp className="h-4 w-4 text-gold" />
               </div>
-              <h1 className="text-sm font-bold font-[family-name:var(--font-space-grotesk)] text-gradient-gold uppercase tracking-widest hidden sm:block">Midas</h1>
+              <h1 className="text-sm font-bold font-(family-name:--font-space-grotesk) text-linear-to-r from-gold to-amber-500 bg-clip-text text-transparent uppercase tracking-widest hidden sm:block">Midas</h1>
             </Link>
             
             <div className="h-4 w-px bg-white/10 hidden md:block" />
@@ -283,10 +285,10 @@ export default function DashboardPage() {
 
               {price > 0 && (
                 <div className="flex items-center gap-2 ml-1">
-                  <span className="text-sm font-bold font-[family-name:var(--font-jetbrains-mono)] text-white">
+                  <span className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-white">
                     {formatPrice(price)}
                   </span>
-                  <span className={`text-[10px] font-bold font-[family-name:var(--font-jetbrains-mono)] px-1.5 py-0.5 rounded ${change >= 0 ? "bg-bullish/10 text-bullish" : "bg-bearish/10 text-bearish"} hidden sm:flex items-center gap-1`}>
+                  <span className={`text-[10px] font-bold font-(family-name:--font-jetbrains-mono) px-1.5 py-0.5 rounded ${change >= 0 ? "bg-bullish/10 text-bullish" : "bg-bearish/10 text-bearish"} hidden sm:flex items-center gap-1`}>
                     {change >= 0 ? "▲" : "▼"} {Math.abs(change).toFixed(2)} ({changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%)
                   </span>
                 </div>
@@ -340,7 +342,7 @@ export default function DashboardPage() {
               <div key={label} className="flex items-center gap-1.5" title={`${label} today`}>
                 <Icon className="h-3.5 w-3.5 text-white/30" />
                 <span className="text-[9px] font-bold tracking-widest text-white/30">{label}</span>
-                <span className={`text-[11px] font-bold font-[family-name:var(--font-jetbrains-mono)] ${color}`}>{value}</span>
+                <span className={`text-[11px] font-bold font-(family-name:--font-jetbrains-mono) ${color}`}>{value}</span>
               </div>
             ))}
           </div>
@@ -387,7 +389,7 @@ export default function DashboardPage() {
         {/* ── LEFT PANEL ── */}
         <aside 
           className={`
-            absolute md:relative z-20 left-0 h-full flex-shrink-0 w-[85vw]
+            absolute md:relative z-20 left-0 h-full shrink-0 w-[85vw]
             transition-all duration-300 ease-in-out
             bg-[#0f1219] border-r border-white/5
             ${leftOpen 
@@ -423,13 +425,13 @@ export default function DashboardPage() {
                     </div>
                   )}
                   {isConnected && (
-                    <div className="text-[9px] font-[family-name:var(--font-jetbrains-mono)] text-white/40">
+                    <div className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/40">
                       Next TCK in <span className="text-white font-bold">{nextAnalysis}s</span>
                     </div>
                   )}
                 </div>
                 {lastAnalysis && (
-                  <div className="mt-2 text-[9px] font-[family-name:var(--font-jetbrains-mono)] text-white/30 text-right">
+                  <div className="mt-2 text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30 text-right">
                     Last execution: {lastAnalysis.toLocaleTimeString()}
                   </div>
                 )}
@@ -473,7 +475,7 @@ export default function DashboardPage() {
                   ].map(({ label, value, color }) => (
                     <div key={label} className="bg-white/5 p-2 rounded flex flex-col justify-between">
                       <p className="text-[9px] font-bold uppercase tracking-widest text-white/30 mb-1">{label}</p>
-                      <p className={`text-xs font-bold font-[family-name:var(--font-jetbrains-mono)] ${color}`}>{value}</p>
+                      <p className={`text-xs font-bold font-(family-name:--font-jetbrains-mono) ${color}`}>{value}</p>
                     </div>
                   ))}
                 </div>
@@ -540,13 +542,13 @@ export default function DashboardPage() {
               </h2>
               <div className="flex items-center gap-2">
                 <div className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse max-md:hidden" />
-                <span className="text-[9px] font-[family-name:var(--font-jetbrains-mono)] text-bullish tracking-wider hidden md:inline">SYSTEM.ACTIVE</span>
+                <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-bullish tracking-wider hidden md:inline">SYSTEM.ACTIVE</span>
               </div>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-2 font-[family-name:var(--font-jetbrains-mono)] text-[10px] space-y-1 hide-scrollbar">
-              {displayHistory.slice(0, 15).map((sig, i) => (
-                <div key={i} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
+            <div className="flex-1 overflow-y-auto p-2 font-(family-name:--font-jetbrains-mono) text-[10px] space-y-1 hide-scrollbar">
+              {displayHistory.slice(0, 15).map((sig) => (
+                <div key={`${sig.id || sig.timestamp}-${sig.symbol}`} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
                   <span className="text-white/20 whitespace-nowrap hidden sm:inline">
                     {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : "--:--:--"}
                   </span>
@@ -568,7 +570,7 @@ export default function DashboardPage() {
         {/* ── RIGHT PANEL ── */}
         <aside 
           className={`
-            absolute md:relative z-20 right-0 h-full flex-shrink-0 w-[85vw]
+            absolute md:relative z-20 right-0 h-full shrink-0 w-[85vw]
             transition-all duration-300 ease-in-out
             bg-[#0f1219] border-l border-white/5
             ${rightOpen 
