@@ -131,6 +131,7 @@ export interface MidasConfig {
   dailyLossLimit: number;
   newsBlackoutMinutes: number;
   maxConcurrentSignals: number;
+  maxConcurrentPositions: number;
 }
 
 export const DEFAULT_CONFIG: MidasConfig = {
@@ -145,4 +146,5 @@ export const DEFAULT_CONFIG: MidasConfig = {
   dailyLossLimit: 500,
   newsBlackoutMinutes: 30,
   maxConcurrentSignals: 3,
+  maxConcurrentPositions: 3,
 };

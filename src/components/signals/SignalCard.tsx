@@ -56,16 +56,32 @@ Reasoning: ${signal.reasoning}`;
     setExecuting(true);
     setExecResult(null);
     try {
-      const result = await onExecute();
-      const isSuccess = result.status === "ok";
+      const result = await onExecute() as { status: string; message?: string; ticket?: number; price?: number };
       
-      setExecResult({ 
-        ok: isSuccess, 
-        msg: result.message || (isSuccess ? "Order executed" : "Execution failed")
-      });
+      let displayMsg: string;
+      let isOk = false;
       
-      // Keep success messages longer, errors shorter
-      setTimeout(() => setExecResult(null), isSuccess ? 6000 : 5000);
+      if (result.status === "ok") {
+        isOk = true;
+        if (result.ticket && result.price) {
+          displayMsg = result.message || `Order #${result.ticket} placed @ ${result.price}`;
+        } else {
+          displayMsg = result.message || "Order executed successfully";
+        }
+      } else if (result.status === "warning") {
+        isOk = false;
+        if (result.message?.includes("no confirmation") || result.message?.includes("1 bridge")) {
+          displayMsg = "⚠️ MT5 bridge not connected - cannot execute";
+        } else {
+          displayMsg = result.message || "Execution warning";
+        }
+      } else {
+        isOk = false;
+        displayMsg = result.message || "Execution failed";
+      }
+      
+      setExecResult({ ok: isOk, msg: displayMsg });
+      setTimeout(() => setExecResult(null), isOk ? 6000 : 5000);
     } catch (err) {
       setExecResult({ 
         ok: false, 

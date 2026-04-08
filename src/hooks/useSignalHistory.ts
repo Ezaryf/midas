@@ -4,6 +4,23 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
 import type { TradeSignal } from "@/lib/types";
 
+const getUserWithRetry = async (supabase: ReturnType<typeof createClient>, retries = 3) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      return user;
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes("lock") && i < retries - 1) {
+        await new Promise(r => setTimeout(r, (i + 1) * 500));
+        continue;
+      }
+      throw err;
+    }
+  }
+  return null;
+};
+
 export function useSignalHistory() {
   const [signals, setSignals] = useState<TradeSignal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -12,7 +29,7 @@ export function useSignalHistory() {
 
   useEffect(() => {
     const load = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getUserWithRetry(supabase);
       if (!user) { setLoading(false); return; }
 
       const { data, error } = await supabase
@@ -95,7 +112,7 @@ export function useSignalHistory() {
   const clearHistory = async () => {
     setClearing(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getUserWithRetry(supabase);
       if (!user) return;
       await supabase.from("signals").delete().eq("user_id", user.id);
       setSignals([]);

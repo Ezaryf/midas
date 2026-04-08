@@ -26,10 +26,10 @@ export function useLivePrice() {
     calibrationFactor: s.calibrationFactor
   })));
   
-  const [tick, setTick] = useState<"up" | "down" | null>(null);
+  const tickRef = useRef<"up" | "down" | null>(null);
 
   // Track session open price (first price of the session)
-  const [sessionData, setSessionData] = useState<{ open: number; high: number; low: number } | null>(null);
+  const sessionDataRef = useRef<{ open: number; high: number; low: number } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   
   const prevPriceRef = useRef<number | null>(null);
@@ -70,31 +70,28 @@ export function useLivePrice() {
   }, []);
 
   useEffect(() => {
-    setSessionData(null);
+    sessionDataRef.current = null;
     prevPriceRef.current = null;
-    setTick(null);
+    tickRef.current = null;
   }, [activeSymbol]);
 
   useEffect(() => {
     if (!isSymbolMatch || bid <= 1) return;
 
-    setSessionData(prev => {
-      if (!prev) {
-        prevPriceRef.current = null;
-        return { open: bid, high: bid, low: bid };
-      }
-      if (prev.open === bid && prev.high >= bid && prev.low <= bid) return prev; // Avoid unnecessary updates
-      return {
-        open: prev.open,
-        high: Math.max(prev.high, bid),
-        low: Math.min(prev.low, bid)
-      };
-    });
+    // Update session data via ref (no re-render)
+    if (!sessionDataRef.current) {
+      prevPriceRef.current = null;
+      sessionDataRef.current = { open: bid, high: bid, low: bid };
+    } else if (bid > sessionDataRef.current.high) {
+      sessionDataRef.current = { ...sessionDataRef.current, high: bid };
+    } else if (bid < sessionDataRef.current.low) {
+      sessionDataRef.current = { ...sessionDataRef.current, low: bid };
+    }
 
     if (prevPriceRef.current !== null && prevPriceRef.current !== bid) {
       if (tickTimeoutRef.current) clearTimeout(tickTimeoutRef.current);
-      setTick(bid >= prevPriceRef.current ? "up" : "down");
-      tickTimeoutRef.current = setTimeout(() => setTick(null), 300);
+      tickRef.current = bid >= prevPriceRef.current ? "up" : "down";
+      tickTimeoutRef.current = setTimeout(() => { tickRef.current = null; }, 300);
     }
     prevPriceRef.current = bid;
 
@@ -110,6 +107,8 @@ export function useLivePrice() {
     const ageMs = Number.isFinite(updatedMs) ? Math.max(0, nowMs - updatedMs) : null;
     const isStale = isConnected && isSymbolMatch && ageMs !== null && ageMs > STALE_TICK_MS;
 
+    const sessionData = sessionDataRef.current;
+    
     if (!isConnected || !isSymbolMatch || bid <= 1 || !sessionData) {
       let error: string | null = null;
       if (!isConnected) {
@@ -129,7 +128,7 @@ export function useLivePrice() {
         isSymbolMatch,
         currentSymbol,
         activeSymbol,
-        tick,
+        tick: tickRef.current,
       };
     }
 
@@ -155,9 +154,9 @@ export function useLivePrice() {
       isSymbolMatch,
       currentSymbol,
       activeSymbol,
-      tick,
+      tick: tickRef.current,
     };
-  }, [bid, ask, spread, time, isConnected, isSymbolMatch, activeSymbol, sessionData, tick, currentSymbol, nowMs]);
+  }, [bid, ask, spread, time, isConnected, isSymbolMatch, activeSymbol, sessionDataRef, currentSymbol, nowMs]);
 
   return result;
 }

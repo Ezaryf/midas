@@ -33,6 +33,7 @@ const TradingViewChart = dynamic(
 );
 
 type RightTab = "news" | "calendar" | "history";
+type BottomTab = "terminal" | "market-state" | "performance";
 
 type TradingStyle = "Scalper" | "Intraday" | "Swing";
 
@@ -42,6 +43,7 @@ export default function DashboardPage() {
   const [tradingStyle, setTradingStyleRaw] = useState<TradingStyle>("Scalper");
   const [styleChanging, setStyleChanging] = useState(false);
   const [rightTab, setRightTab]       = useState<RightTab>("news");
+  const [bottomTab, setBottomTab]     = useState<BottomTab>("terminal");
   const [rightOpen, setRightOpen]     = useState(true);
   const [leftOpen, setLeftOpen]       = useState(true);
   const [lastAnalysis, setLastAnalysis] = useState<Date | null>(null);
@@ -485,12 +487,12 @@ export default function DashboardPage() {
         {/* ── LEFT PANEL ── */}
         <aside 
           className={`
-            absolute md:relative z-20 left-0 h-full shrink-0 w-[85vw]
+            absolute md:relative z-20 left-0 h-full shrink-0 w-[85vw] overflow-hidden
             transition-all duration-300 ease-in-out
             bg-[#0f1219] border-r border-white/5
             ${leftOpen 
               ? "translate-x-0 shadow-[20px_0_40px_rgba(0,0,0,0.5)] md:shadow-none md:w-[300px]" 
-              : "-translate-x-full md:translate-x-0 md:w-0 border-r-transparent"}
+              : "-translate-x-full md:translate-x-0 md:w-0 md:pointer-events-none border-r-transparent"}
           `}
         >
           {/* Inner constraint so content doesn't squash when animating width */}
@@ -503,7 +505,7 @@ export default function DashboardPage() {
             
             <div className="flex-1 overflow-y-auto p-3 space-y-4">
               {/* Section: Status */}
-              <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
+              <div className="hidden bg-[#131722] rounded-lg border border-white/5 p-3">
                 <div className="flex items-center justify-between mb-2">
                   <h2 className="text-[9px] font-bold text-white/40 uppercase tracking-widest">Analysis Engine</h2>
                   <span className="text-[9px] font-bold text-gold bg-gold/10 px-1.5 py-0.5 rounded border border-gold/20 uppercase tracking-wider">{tradingStyle}</span>
@@ -562,9 +564,6 @@ export default function DashboardPage() {
                   </p>
                 )}
               </div>
-
-              {/* Section: Market State Engine */}
-              <MarketStatePanel />
 
               {/* Section: Active Signal */}
               <div>
@@ -700,33 +699,114 @@ export default function DashboardPage() {
           </div>
 
           {/* ── EXECUTION TERMINAL (BOTTOM PANEL) ── */}
-          <div className="h-48 md:h-56 flex-none bg-[#0a0d14] flex flex-col relative z-20">
+          <div className="h-56 md:h-72 flex-none bg-[#0a0d14] flex flex-col relative z-20">
             <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-[#0f1219]">
               <h2 className="text-[10px] font-bold tracking-widest uppercase text-white/50 flex items-center gap-2">
                 <Terminal className="h-3 w-3" /> System Terminal
               </h2>
               <div className="flex items-center gap-2">
+                <div className="hidden md:flex items-center gap-1 rounded-md border border-white/10 bg-black/20 p-1">
+                  {([
+                    { id: "terminal", label: "Execution Log", icon: Terminal },
+                    { id: "market-state", label: "Market State", icon: Activity },
+                    { id: "performance", label: "Performance", icon: Trophy },
+                  ] as { id: BottomTab; label: string; icon: typeof Terminal }[]).map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setBottomTab(tab.id)}
+                      className={`flex items-center gap-1 rounded px-2 py-1 text-[9px] font-bold uppercase tracking-wider transition-all ${
+                        bottomTab === tab.id
+                          ? "bg-gold/10 text-gold border border-gold/20"
+                          : "text-white/30 hover:bg-white/5 hover:text-white/70 border border-transparent"
+                      }`}
+                    >
+                      <tab.icon className="h-3 w-3" />
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse max-md:hidden" />
                 <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-bullish tracking-wider hidden md:inline">SYSTEM.ACTIVE</span>
               </div>
             </div>
-            
-            <div className="flex-1 overflow-y-auto p-2 font-(family-name:--font-jetbrains-mono) text-[10px] space-y-1 hide-scrollbar">
-              {displayHistory.slice(0, 15).map((sig, idx) => (
-                <div key={`${sig.id || sig.timestamp || idx}-${sig.symbol}-${idx}`} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
-                  <span className="text-white/20 whitespace-nowrap hidden sm:inline">
-                    {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : "--:--:--"}
-                  </span>
-                  <span className={`font-bold w-12 shrink-0 ${sig.direction === 'BUY' ? 'text-bullish' : sig.direction === 'SELL' ? 'text-bearish' : 'text-warning'}`}>
-                    [{sig.direction}]
-                  </span>
-                  <span className="text-white/60 truncate flex-1 min-w-0">
-                    {sig.symbol || targetSymbol} <span className="text-white/40">at</span> {sig.entry_price} <span className="text-white/40 ml-1">SL: {sig.stop_loss}</span> <span className="text-white/40 ml-1">TP: {sig.take_profit_1}</span>
-                  </span>
-                </div>
+
+            <div className="flex md:hidden items-center gap-1 border-b border-white/5 bg-[#0c1017] px-2 py-1.5">
+              {([
+                { id: "terminal", label: "Logs", icon: Terminal },
+                { id: "market-state", label: "State", icon: Activity },
+                { id: "performance", label: "Perf", icon: Trophy },
+              ] as { id: BottomTab; label: string; icon: typeof Terminal }[]).map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setBottomTab(tab.id)}
+                  className={`flex items-center gap-1 rounded px-2 py-1 text-[9px] font-bold uppercase tracking-wider transition-all ${
+                    bottomTab === tab.id
+                      ? "bg-gold/10 text-gold border border-gold/20"
+                      : "text-white/35 hover:bg-white/5 hover:text-white/70 border border-transparent"
+                  }`}
+                >
+                  <tab.icon className="h-3 w-3" />
+                  {tab.label}
+                </button>
               ))}
-              {displayHistory.length === 0 && (
-                <div className="text-white/20 p-2 italic flex items-center justify-center h-full">Waiting for signal execution commands...</div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-2 hide-scrollbar">
+              {bottomTab === "terminal" && (
+                <div className="space-y-1 font-(family-name:--font-jetbrains-mono) text-[10px]">
+                  {displayHistory.slice(0, 15).map((sig, idx) => (
+                    <div key={`${sig.id || sig.timestamp || idx}-${sig.symbol}-${idx}`} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
+                      <span className="text-white/20 whitespace-nowrap hidden sm:inline">
+                        {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : "--:--:--"}
+                      </span>
+                      <span className={`font-bold w-12 shrink-0 ${sig.direction === 'BUY' ? 'text-bullish' : sig.direction === 'SELL' ? 'text-bearish' : 'text-warning'}`}>
+                        [{sig.direction}]
+                      </span>
+                      <span className="text-white/60 truncate flex-1 min-w-0">
+                        {sig.symbol || targetSymbol} <span className="text-white/40">at</span> {sig.entry_price} <span className="text-white/40 ml-1">SL: {sig.stop_loss}</span> <span className="text-white/40 ml-1">TP: {sig.take_profit_1}</span>
+                      </span>
+                    </div>
+                  ))}
+                  {displayHistory.length === 0 && (
+                    <div className="text-white/20 p-2 italic flex items-center justify-center h-full min-h-32">Waiting for signal execution commands...</div>
+                  )}
+                </div>
+              )}
+
+              {bottomTab === "market-state" && (
+                <div className="max-w-3xl">
+                  <MarketStatePanel />
+                </div>
+              )}
+
+              {bottomTab === "performance" && (
+                <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
+                  <div className="flex items-center justify-between mb-3 border-b border-white/5 pb-2">
+                    <p className="text-[9px] font-bold text-white/30 uppercase tracking-widest">Metrics / Performance</p>
+                    <button
+                      onClick={resetPerformance}
+                      disabled={resetting}
+                      className="flex items-center gap-1 rounded bg-black/20 px-1.5 py-1 text-[9px] font-bold text-white/20 hover:text-bearish hover:bg-bearish/10 border border-transparent hover:border-bearish/20 transition-all disabled:opacity-40 uppercase tracking-wider"
+                      title="Reset all performance stats"
+                    >
+                      {resetting ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Trash2 className="h-2.5 w-2.5" />}
+                      {resetting ? "Resetting..." : "Reset"}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {[
+                      { label: "Win Rate", value: perf.winRate + "%", color: "text-bullish" },
+                      { label: "P.Factor", value: perf.profitFactor > 0 ? perf.profitFactor + "x" : "—", color: "text-gold" },
+                      { label: "Today PnL", value: (perf.todayPnl >= 0 ? "+" : "") + "$" + perf.todayPnl.toFixed(0), color: perf.todayPnl >= 0 ? "text-bullish" : "text-bearish" },
+                      { label: "Week PnL", value: (perf.weekPnl >= 0 ? "+" : "") + "$" + perf.weekPnl.toFixed(0), color: perf.weekPnl >= 0 ? "text-bullish" : "text-bearish" },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} className="bg-white/5 p-3 rounded flex flex-col justify-between min-h-20">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-white/30 mb-1">{label}</p>
+                        <p className={`text-sm font-bold font-(family-name:--font-jetbrains-mono) ${color}`}>{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -735,12 +815,12 @@ export default function DashboardPage() {
         {/* ── RIGHT PANEL ── */}
         <aside 
           className={`
-            absolute md:relative z-20 right-0 h-full shrink-0 w-[85vw]
+            absolute md:relative z-20 right-0 h-full shrink-0 w-[85vw] overflow-hidden
             transition-all duration-300 ease-in-out
             bg-[#0f1219] border-l border-white/5
             ${rightOpen 
               ? "translate-x-0 shadow-[-20px_0_40px_rgba(0,0,0,0.5)] md:shadow-none md:w-[320px]" 
-              : "translate-x-full md:translate-x-0 md:w-0 border-l-transparent"}
+              : "translate-x-full md:translate-x-0 md:w-0 md:pointer-events-none border-l-transparent"}
           `}
         >
           {/* Inner constraint */}

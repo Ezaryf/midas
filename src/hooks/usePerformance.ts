@@ -21,6 +21,23 @@ const EMPTY: PerformanceStats = {
   grossProfit: 0, grossLoss: 0, totalPnl: 0, todayPnl: 0, weekPnl: 0, profitFactor: 0,
 };
 
+const getUserWithRetry = async (supabase: ReturnType<typeof createClient>, retries = 3) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      return user;
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes("lock") && i < retries - 1) {
+        await new Promise(r => setTimeout(r, (i + 1) * 500));
+        continue;
+      }
+      throw err;
+    }
+  }
+  return null;
+};
+
 export function usePerformance() {
   const [stats, setStats]     = useState<PerformanceStats>(EMPTY);
   const [loading, setLoading] = useState(true);
@@ -28,7 +45,7 @@ export function usePerformance() {
   const supabase = createClient();
 
   const load = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getUserWithRetry(supabase);
     if (!user) { setLoading(false); return; }
 
     const { data } = await supabase
@@ -61,7 +78,7 @@ export function usePerformance() {
   const resetPerformance = async () => {
     setResetting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getUserWithRetry(supabase);
       if (!user) return;
       await supabase.from("signals").delete().eq("user_id", user.id);
       setStats(EMPTY);

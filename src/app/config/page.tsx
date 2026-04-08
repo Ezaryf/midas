@@ -67,6 +67,29 @@ export default function ConfigPage() {
     flash();
   };
 
+  const syncSettingToBackend = async (key: string, value: number) => {
+    try {
+      const body: Record<string, number> = {};
+      if (key === "maxConcurrentPositions") body.max_concurrent_positions = value;
+      else if (key === "dailyLossLimit") body.daily_loss_limit = value;
+      else if (key === "maxRiskPercent") body.max_risk_percent = value;
+      else if (key === "newsBlackoutMinutes") body.news_blackout_minutes = value;
+      
+      if (Object.keys(body).length > 0) {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+    } catch { /* backend may be offline */ }
+  };
+
+  const saveRiskField = (key: keyof typeof config, value: number) => {
+    saveField(key, value);
+    syncSettingToBackend(key, value);
+  };
+
   const testMt5 = async () => {
     if (!config.mt5Account || !config.mt5Password || !config.mt5Server) {
       setMt5State("error"); setMt5Err("Fill all three fields first."); return;
@@ -349,9 +372,9 @@ export default function ConfigPage() {
               <div className="grid gap-4 sm:grid-cols-2">
                 {([
                   { key: "maxRiskPercent",      label: "Max Risk Per Trade", unit: "%",       step: 0.1, min: 0.1, max: 10   },
-                  { key: "dailyLossLimit",       label: "Daily Loss Limit",   unit: "$",       step: 50,  min: 0,   max: 10000 },
-                  { key: "newsBlackoutMinutes",  label: "News Blackout",      unit: "min",     step: 5,   min: 0,   max: 120   },
-                  { key: "maxConcurrentSignals", label: "Max Concurrent",     unit: "signals", step: 1,   min: 1,   max: 10    },
+                  { key: "dailyLossLimit",      label: "Daily Loss Limit",   unit: "$",       step: 50,  min: 0,   max: 10000 },
+                  { key: "newsBlackoutMinutes", label: "News Blackout",      unit: "min",     step: 5,   min: 0,   max: 120   },
+                  { key: "maxConcurrentPositions", label: "Max Positions",  unit: "trades",  step: 1,   min: 1,   max: 10    },
                 ] as const).map(({ key, label, unit, step, min, max }) => (
                   <div key={key} className="rounded-xl bg-surface p-4">
                     <div className="flex items-center justify-between mb-3">
@@ -361,11 +384,11 @@ export default function ConfigPage() {
                     <div className="flex items-center gap-3">
                       <input type="range" min={min} max={max} step={step}
                         value={(config as unknown as Record<string, number>)[key]}
-                        onChange={e => saveField(key as keyof typeof config, parseFloat(e.target.value))}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
                         className="flex-1 accent-gold" />
                       <input type="number" min={min} max={max} step={step}
                         value={(config as unknown as Record<string, number>)[key]}
-                        onChange={e => saveField(key as keyof typeof config, parseFloat(e.target.value))}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
                         className="w-20 rounded-lg bg-surface-active border border-border px-2 py-1.5 text-sm text-center font-[family-name:var(--font-jetbrains-mono)] focus:outline-none focus:border-gold/40" />
                     </div>
                   </div>
