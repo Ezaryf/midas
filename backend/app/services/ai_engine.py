@@ -3,7 +3,9 @@ import logging
 import os
 import asyncio
 from openai import AsyncOpenAI
-from app.schemas.signal import TradeSignal
+from pydantic import BaseModel, Field
+
+from app.schemas.signal import AnalysisBatch, TradeSignal
 from app.services.pattern_recognition import Pattern
 from typing import List, Optional
 
@@ -56,6 +58,79 @@ class AITradingEngine:
         self.client = AsyncOpenAI(**kwargs)
 
     # ── Primary Signal Generation ────────────────────────────────────────────
+
+    async def explain_batch(self, batch: AnalysisBatch) -> AnalysisBatch:
+        """
+        Use AI only as a bounded explainer.
+        The deterministic engine owns levels, ranking, and direction.
+        """
+
+        class BatchExplanation(BaseModel):
+            regime_summary: str = Field(..., description="One-sentence market regime summary.")
+            primary_reasoning: str = Field(..., description="Two concise sentences for the primary setup.")
+            backup_reasonings: list[str] = Field(default_factory=list, description="One short explanation per backup setup in order.")
+
+        prompt = {
+            "symbol": batch.symbol,
+            "trading_style": batch.trading_style,
+            "market_regime": batch.market_regime,
+            "source": batch.source,
+            "primary": batch.primary.model_dump(),
+            "backups": [backup.model_dump() for backup in batch.backups],
+        }
+
+        try:
+            if self.provider in STRUCTURED_OUTPUT_PROVIDERS:
+                response = await self.client.beta.chat.completions.parse(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a trading analyst. Explain the provided setups only. "
+                                "Do not change prices, targets, stops, ranking, or direction."
+                            ),
+                        },
+                        {"role": "user", "content": json.dumps(prompt)},
+                    ],
+                    response_format=BatchExplanation,
+                )
+                explanation = response.choices[0].message.parsed
+            else:
+                schema = BatchExplanation.model_json_schema()
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You explain existing trade setups. "
+                                "Never modify levels, direction, or ranking. Return JSON only."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                json.dumps(prompt)
+                                + "\n\nRespond with JSON matching this schema:\n"
+                                + json.dumps(schema, indent=2)
+                            ),
+                        },
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                )
+                raw = (response.choices[0].message.content or "{}").strip()
+                explanation = BatchExplanation.model_validate_json(raw)
+
+            batch.regime_summary = explanation.regime_summary
+            batch.primary.reasoning = explanation.primary_reasoning
+            for backup, reasoning in zip(batch.backups, explanation.backup_reasonings):
+                backup.reasoning = reasoning
+            return batch
+        except Exception as exc:
+            logger.warning(f"AI batch explanation failed ({self.provider}): {exc}")
+            return batch
 
     async def generate_signal(
         self,
@@ -207,6 +282,33 @@ RULES:
         # All AI providers failed — build signal from strongest pattern
         logger.warning("All AI providers failed — building pattern-only signal")
         return _build_pattern_signal(patterns, current_price, trend, trading_style)
+
+
+    @staticmethod
+    async def explain_batch_with_fallback(
+        batch: AnalysisBatch,
+        primary_provider: str = "openai",
+        primary_api_key: str | None = None,
+    ) -> AnalysisBatch:
+        chain = [primary_provider] + [p for p in FALLBACK_PROVIDERS if p != primary_provider]
+
+        for provider in chain:
+            api_key = primary_api_key if provider == primary_provider else _get_provider_key(provider)
+            if not api_key:
+                logger.debug(f"No API key for {provider} â€” skipping batch explanation")
+                continue
+
+            try:
+                engine = AITradingEngine(api_key=api_key, provider=provider)
+                explained = await asyncio.wait_for(engine.explain_batch(batch), timeout=20.0)
+                logger.info(f"âœ… Batch explanation generated via {provider}")
+                return explained
+            except asyncio.TimeoutError:
+                logger.warning(f"Provider {provider} timed out during batch explanation â€” trying next")
+            except Exception as exc:
+                logger.warning(f"Provider {provider} failed during batch explanation: {exc} â€” trying next")
+
+        return batch
 
 
 def _get_provider_key(provider: str) -> str | None:

@@ -92,15 +92,30 @@ def init_mt5() -> bool:
         if info:
             logger.info(f"✅ Using open session: {info.name} | {info.server}")
 
-    # Auto-detect symbol — try configured name then common variants
-    candidates = [SYMBOL, "XAUUSD", "GOLD", "XAUUSDm", "XAUUSD.", "GOLD."]
+    # Auto-detect symbol — prioritize standard XAUUSD naming
+    candidates = ["XAUUSD", "GOLDUSD", "XAUUSDm", "XAUUSD.", "GOLD.", "GOLD"]
     resolved = None
     for sym in candidates:
         mt5.symbol_select(sym, True)
         info_sym = mt5.symbol_info(sym)
         if info_sym is not None:
-            resolved = sym
-            break
+            # Pre-flight check: ensure price is in the reasonable range for Gold (~1500-6500)
+            # Higher limit set to accommodate 2026 market environment where Gold > 4800.
+            tick = mt5.symbol_info_tick(sym)
+            if tick and (1500 < tick.bid < 6500):
+                resolved = sym
+                break
+            else:
+                logger.warning(f"Symbol '{sym}' found but price {tick.bid if tick else 'N/A'} is outside normal Gold range. Skipping.")
+    
+    if resolved is None:
+        # Fallback to whatever matches, but warn loudly
+        for sym in candidates:
+            if mt5.symbol_info(sym):
+                resolved = sym
+                logger.warning(f"⚠️ Using symbol '{resolved}' despite price anomaly. Chart spikes may occur.")
+                break
+
 
     if resolved is None:
         logger.error(f"Could not find symbol. Tried: {candidates}")
@@ -348,7 +363,7 @@ async def command_receiver(ws, auto_trade: bool):
                         # Log risk event if blocked
                         if result.get("status") == "blocked" and db and db.is_enabled():
                             try:
-                                await db.log_risk_event(
+                                db.log_risk_event(
                                     event_type="POSITION_BLOCKED",
                                     description=result.get("reason", "Unknown"),
                                     action_taken="Order rejected",
@@ -360,7 +375,7 @@ async def command_receiver(ws, auto_trade: bool):
                         # Save order to database if successful
                         if result.get("status") == "ok" and db and db.is_enabled():
                             try:
-                                await db.save_order(
+                                db.save_order(
                                     signal_id=signal_id,
                                     ticket=result.get("ticket"),
                                     direction=direction,

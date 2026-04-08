@@ -91,6 +91,7 @@ class DatabaseService:
         trend: str,
         ai_provider: str,
         ai_model: str,
+        regime_summary: str | None = None,
     ) -> str:
         """Save a generated signal to database. Returns signal ID."""
         if not self.is_enabled():
@@ -105,7 +106,23 @@ class DatabaseService:
                 "take_profit_2": float(signal.take_profit_2),
                 "confidence": float(signal.confidence),
                 "reasoning": signal.reasoning,
+                "symbol": signal.symbol,
+                "analysis_batch_id": signal.analysis_batch_id,
                 "trading_style": signal.trading_style,
+                "setup_type": signal.setup_type,
+                "market_regime": signal.market_regime,
+                "score": float(signal.score),
+                "rank": int(signal.rank),
+                "is_primary": bool(signal.is_primary),
+                "entry_window_low": float(signal.entry_window_low),
+                "entry_window_high": float(signal.entry_window_high),
+                "context_tags": signal.context_tags,
+                "source": signal.source,
+                "context": {
+                    "regime_summary": regime_summary,
+                    "context_tags": signal.context_tags,
+                    "source": signal.source,
+                },
                 "indicators": indicators,
                 "calendar_events": calendar_events,
                 "current_price": float(current_price),

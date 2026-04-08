@@ -1,180 +1,136 @@
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+
 from app.api.ws.mt5_handler import manager
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_INTERVAL = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", "10"))  # Faster for scalping
+ANALYSIS_INTERVAL = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", "10"))
 
 # Trading session times (GMT)
-LONDON_SESSION = (8, 12)   # 8:00-12:00 GMT
-NY_SESSION = (13, 17)      # 13:00-17:00 GMT
+LONDON_SESSION = (8, 12)
+NY_SESSION = (13, 17)
 
 # Daily limits
 MAX_DAILY_TRADES = 5
 MAX_DAILY_LOSS_PCT = 2.0
 MAX_CONSECUTIVE_LOSSES = 3
 
-# Broker costs (adjust to your broker)
+# Broker costs (kept for compatibility with bridge/test tooling)
 GOLD_SPREAD_POINTS = 5.0
 COMMISSION_PER_LOT = 2.0
 
-# Style configs — defined once, used by both loop and API
 STYLE_CONFIG = {
     "Scalper": {
-        "timeframes": ["5m", "1m"],  # M5 primary, M1 for timing
-        "lookback":   ["1d", "2d"],
-        "min_confidence":          50,  # Higher threshold
-        "signal_confidence":       60,  # Higher threshold
-        "auto_execute_confidence": 75,  # Higher threshold
-        "max_signals":             3,   # REDUCED from 8 to 3
-        "rr_min":    1.5,  # IMPROVED from 1.0 to 1.5
-        "rr_target": 2.0,  # IMPROVED from 1.5 to 2.0
-        "atr_sl_mult":  0.8,  # IMPROVED from 0.5 to 0.8
-        "atr_tp_mult":  1.2,  # IMPROVED from 0.5 to 1.2
-        # Realistic limits for scalping gold (accounting for spread)
-        "max_sl_points": 15.0,  # INCREASED from 8 to 15
-        "max_tp1_points": 22.0, # INCREASED from 8 to 22 (1.5:1 RR)
-        "max_tp2_points": 30.0, # INCREASED from 12 to 30 (2:1 RR)
-        "min_entry_separation": 50.0,  # NEW: Min 50pts between entries
-        "max_positions_per_direction": 1,  # NEW: Only 1 BUY or 1 SELL at a time
+        "timeframes": ["5m", "1m"],
+        "lookback": ["2d", "1d"],
+        "min_pattern_confidence": 58,
+        "auto_execute_confidence": 78,
+        "rr_min": 1.35,
+        "rr_target": 1.9,
+        "stop_buffer_atr": 0.30,
+        "entry_window_atr": 0.12,
+        "max_backups": 2,
     },
     "Intraday": {
         "timeframes": ["15m", "1h"],
-        "lookback":   ["5d", "7d"],
-        "min_confidence":          40,
-        "signal_confidence":       55,
+        "lookback": ["5d", "7d"],
+        "min_pattern_confidence": 55,
         "auto_execute_confidence": 75,
-        "max_signals":             6,
-        "rr_min":    1.5,
-        "rr_target": 2.5,
-        "atr_sl_mult":  1.5,
-        "atr_tp_mult":  1.5,
-        "max_sl_points": 30.0,
-        "max_tp1_points": 45.0,
-        "max_tp2_points": 75.0,
+        "rr_min": 1.5,
+        "rr_target": 2.35,
+        "stop_buffer_atr": 0.35,
+        "entry_window_atr": 0.16,
+        "max_backups": 2,
     },
     "Swing": {
         "timeframes": ["1h", "4h"],
-        "lookback":   ["10d", "20d"],
-        "min_confidence":          45,
-        "signal_confidence":       60,
+        "lookback": ["10d", "20d"],
+        "min_pattern_confidence": 55,
         "auto_execute_confidence": 80,
-        "max_signals":             4,
-        "rr_min":    2.0,
-        "rr_target": 3.5,
-        "atr_sl_mult":  2.0,
-        "atr_tp_mult":  2.0,
-        "max_sl_points": 80.0,
-        "max_tp1_points": 160.0,
-        "max_tp2_points": 280.0,
+        "rr_min": 1.8,
+        "rr_target": 3.0,
+        "stop_buffer_atr": 0.45,
+        "entry_window_atr": 0.22,
+        "max_backups": 2,
     },
 }
 
 
 async def background_trading_loop():
     logger.info(f"Trading loop started. Analysis every {ANALYSIS_INTERVAL}s.")
-    
-    # Use persistent state — survives restarts, syncs with Supabase
+
     from app.services.trading_state import trading_state as state
 
-    # Run immediately on startup
     try:
-        # Read style from persistent state first, then manager, then env
         style = state.trading_style or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
-        symbol = getattr(state, 'target_symbol', "XAUUSD")
+        symbol = getattr(state, "target_symbol", "XAUUSD")
         if is_trading_session_active():
-            result = await run_analysis_cycle(trading_style=style, symbol=symbol)
-            if result:
-                state.record_trade(
-                    is_loss=result.get("loss", False),
-                    loss_amount=result.get("loss_amount", 0),
-                )
+            await run_analysis_cycle(trading_style=style, symbol=symbol)
         else:
             logger.info("Outside trading hours - skipping initial analysis")
-    except Exception as e:
-        logger.error(f"Initial analysis error: {e}")
+    except Exception as exc:
+        logger.error(f"Initial analysis error: {exc}")
 
     while True:
         try:
             await asyncio.sleep(ANALYSIS_INTERVAL)
-            
-            # Reset daily counters at midnight (persisted)
             state.check_and_reset_daily()
-            
-            # Check daily limits
+
             if state.daily_trades >= MAX_DAILY_TRADES:
                 logger.warning(f"Daily trade limit reached ({MAX_DAILY_TRADES}). Pausing until tomorrow.")
-                await asyncio.sleep(300)  # Check every 5 min
+                await asyncio.sleep(300)
                 continue
-            
+
             if state.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
                 logger.warning(f"Consecutive loss limit reached ({MAX_CONSECUTIVE_LOSSES}). Pausing for 1 hour.")
                 await asyncio.sleep(3600)
                 state.reset_consecutive_losses()
                 continue
-            
-            # Check if in trading session
+
             if not is_trading_session_active():
                 logger.debug("Outside trading hours - skipping analysis")
                 continue
-            
-            # Check for upcoming news events
+
             if is_high_impact_news_upcoming():
                 logger.warning("High-impact news event within 30 minutes - skipping analysis")
                 continue
-            
-            # Run analysis — style from persistent state
+
             style = state.trading_style or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
-            symbol = getattr(state, 'target_symbol', "XAUUSD")
-            result = await run_analysis_cycle(trading_style=style, symbol=symbol)
-            
-            if result:
-                state.record_trade(
-                    is_loss=result.get("loss", False),
-                    loss_amount=result.get("loss_amount", 0),
-                )
-                    
+            symbol = getattr(state, "target_symbol", "XAUUSD")
+            await run_analysis_cycle(trading_style=style, symbol=symbol)
+
         except asyncio.CancelledError:
             logger.info("Trading loop cancelled.")
             raise
-        except Exception as e:
-            logger.error(f"Trading loop error: {e}")
+        except Exception as exc:
+            logger.error(f"Trading loop error: {exc}")
             await asyncio.sleep(30)
 
 
 def is_trading_session_active() -> bool:
-    """Check if current time is within London or NY session (GMT)."""
-    from datetime import datetime, timezone
-    
     current_hour = datetime.now(timezone.utc).hour
-    
-    # London session: 8:00-12:00 GMT
     if LONDON_SESSION[0] <= current_hour < LONDON_SESSION[1]:
         return True
-    
-    # NY session: 13:00-17:00 GMT
     if NY_SESSION[0] <= current_hour < NY_SESSION[1]:
         return True
-    
     return False
 
 
 def is_high_impact_news_upcoming(minutes_ahead: int = 30) -> bool:
-    """Check if high-impact news event is coming within `minutes_ahead` minutes."""
     try:
         from app.services.forex_factory import ForexFactoryService
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta
         from dateutil import parser as dtparser
 
         ff = ForexFactoryService()
         events = ff.get_weekly_events()
 
         now = datetime.now(timezone.utc)
-        window_start = now - timedelta(minutes=5)   # also skip if event just happened
-        window_end   = now + timedelta(minutes=minutes_ahead)
+        window_start = now - timedelta(minutes=5)
+        window_end = now + timedelta(minutes=minutes_ahead)
 
         for event in events:
             if event.get("impact") != "High":
@@ -187,290 +143,265 @@ def is_high_impact_news_upcoming(minutes_ahead: int = 30) -> bool:
                 if event_time.tzinfo is None:
                     event_time = event_time.replace(tzinfo=timezone.utc)
                 if window_start <= event_time <= window_end:
-                    logger.warning(f"High-impact news in {int((event_time - now).total_seconds() // 60)}m: {event.get('title', 'Unknown')}")
+                    minutes_until = int((event_time - now).total_seconds() // 60)
+                    logger.warning(f"High-impact news in {minutes_until}m: {event.get('title', 'Unknown')}")
                     return True
             except (ValueError, TypeError):
                 continue
 
         return False
     except ImportError:
-        logger.warning("python-dateutil not installed — news filter disabled")
+        logger.warning("python-dateutil not installed - news filter disabled")
         return False
-    except Exception as e:
-        logger.error(f"Error checking news events: {e}")
-        return False  # Don't block trading on error
+    except Exception as exc:
+        logger.error(f"Error checking news events: {exc}")
+        return False
 
 
 async def run_analysis_cycle(trading_style: str | None = None, symbol: str | None = None):
-    """
-    Full analysis cycle. trading_style and symbol are passed explicitly — never read from env here.
-    This ensures the API call with a specific style/symbol produces different results than the loop.
-    """
+    from app.schemas.signal import AnalysisBatch, TradeSignal
     from app.services.ai_engine import AITradingEngine
-    from app.services.forex_factory import ForexFactoryService
-    from app.services.technical_analysis import get_latest_indicators, fetch_ohlcv, compute_indicators
-    from app.services.pattern_recognition import PatternRecognizer
+    from app.services.candle_source import fetch_candles
     from app.services.database import db
-    from collections import defaultdict
+    from app.services.forex_factory import ForexFactoryService
+    from app.services.market_state import build_analysis_batch, build_snapshot
+    from app.services.pattern_recognition import PatternRecognizer
+    from app.services.technical_analysis import compute_indicators
 
-    def clamp_levels(entry: float, sl: float, tp1: float, tp2: float, direction: str, cfg: dict) -> tuple:
-        """Enforce hard point limits per trading style, accounting for spread."""
-        sign = 1 if direction == "BUY" else -1
-        max_sl  = cfg["max_sl_points"]
-        max_tp1 = cfg["max_tp1_points"]
-        max_tp2 = cfg["max_tp2_points"]
-
-        # Account for spread in calculations
-        spread = GOLD_SPREAD_POINTS
-        
-        # Clamp SL distance (add spread to effective risk)
-        sl_dist = abs(entry - sl)
-        if sl_dist > max_sl:
-            sl = round(entry - max_sl * sign, 2)
-            sl_dist = max_sl
-
-        # Clamp TP1 — must be at least 1.5:1 RR after spread
-        # Effective risk = SL distance + spread
-        effective_risk = sl_dist + spread
-        min_tp1_dist = effective_risk * cfg["rr_min"]
-        
-        tp1_dist = abs(tp1 - entry)
-        tp1_dist = max(min_tp1_dist, min(tp1_dist, max_tp1))
-        tp1 = round(entry + tp1_dist * sign, 2)
-
-        # Clamp TP2 — must be > TP1, at most max_tp2
-        min_tp2_dist = tp1_dist * 1.3  # At least 30% more than TP1
-        tp2_dist = abs(tp2 - entry)
-        tp2_dist = max(min_tp2_dist, min(tp2_dist, max_tp2))
-        tp2 = round(entry + tp2_dist * sign, 2)
-
-        return sl, tp1, tp2
-
-    # Use passed style, fall back to env, fall back to Scalper
     style = trading_style or os.getenv("TRADING_STYLE", "Scalper")
-    # Normalize capitalization
     style = style.capitalize() if style.lower() in ("scalper", "intraday", "swing") else style
     if style not in STYLE_CONFIG:
         style = "Scalper"
 
-    # Default to XAUUSD if no symbol provided
     target_symbol = symbol or "XAUUSD"
-
     config = STYLE_CONFIG[style]
-    logger.info(f"Analysis: symbol={target_symbol} | style={style} | TFs={config['timeframes']} | RR={config['rr_min']}-{config['rr_target']} | Spread={GOLD_SPREAD_POINTS}pts")
-
     loop = asyncio.get_event_loop()
 
-    # Fetch indicators using the PRIMARY timeframe for this style (M5 for scalper)
-    indicators = await loop.run_in_executor(None, get_latest_indicators, config["timeframes"][0], target_symbol)
-    current_price = indicators.pop("current_price")
-    trend         = indicators.pop("trend")
-    atr           = indicators.get("ATRr_14", 15.0)
-    # Target Symbol pops out of indicators
-    _ = indicators.pop("symbol", None)
+    logger.info(
+        f"Analysis: symbol={target_symbol} | style={style} | "
+        f"TFs={config['timeframes']} | RR={config['rr_min']}-{config['rr_target']}"
+    )
 
-    # Use live MT5 price if available (TODO: bridge needs to support querying specific symbol)
-    latest_tick = manager.latest_tick
-    if latest_tick:
-        current_price = float(latest_tick.get("bid", current_price))
+    def build_no_data_batch() -> AnalysisBatch:
+        current_price = float(manager.latest_tick.get("bid", 0.0)) if manager.latest_tick else 0.0
+        hold = TradeSignal(
+            symbol=target_symbol,
+            direction="HOLD",
+            entry_price=current_price,
+            stop_loss=current_price,
+            take_profit_1=current_price,
+            take_profit_2=current_price,
+            confidence=0,
+            reasoning="No trade: insufficient candle data from MT5 and Yahoo sources.",
+            trading_style=style,
+            setup_type="no_data",
+            market_regime="unknown",
+            score=0,
+            rank=1,
+            is_primary=True,
+            entry_window_low=current_price,
+            entry_window_high=current_price,
+            context_tags=["no_data"],
+            source="unavailable",
+        )
+        return AnalysisBatch(
+            analysis_batch_id="no-data",
+            symbol=target_symbol,
+            trading_style=style,
+            evaluated_at=datetime.now(timezone.utc),
+            market_regime="unknown",
+            regime_summary="No analysis batch generated because no usable candles were available.",
+            source="unavailable",
+            source_is_live=False,
+            primary=hold,
+            backups=[],
+        )
 
-    # ── Pattern detection — prioritize PRIMARY timeframe ──────────────────────
-    all_patterns = []
-    try:
-        for i, (tf, lookback) in enumerate(zip(config["timeframes"], config["lookback"])):
-            df = await loop.run_in_executor(None, fetch_ohlcv, tf, lookback, target_symbol)
-            if df is None or len(df) < 20:
-                logger.warning(f"  {tf}: insufficient data ({len(df) if df is not None else 0} bars)")
-                continue
-            df = await loop.run_in_executor(None, compute_indicators, df)
-            recognizer = PatternRecognizer(min_confidence=config["min_confidence"])
-            tf_patterns = await loop.run_in_executor(None, recognizer.detect_all_patterns, df)
-            
-            for p in tf_patterns:
-                p.timeframe = tf
-                # PRIMARY timeframe (M5) gets higher weight
-                if i == 0:
-                    p.confidence = min(p.confidence + 10, 95)
-                # Secondary timeframe (M1) gets lower weight
-                elif i == 1:
-                    p.confidence = max(p.confidence - 5, 40)
-            
-            all_patterns.extend(tf_patterns)
-            logger.info(f"  {tf}: {len(tf_patterns)} patterns")
+    datasets: dict[str, tuple] = {}
+    patterns_by_timeframe: dict[str, list] = {}
+    current_price: float | None = None
 
-        # Confluence boost — same zone on multiple timeframes
-        groups = defaultdict(list)
-        for p in all_patterns:
-            key = (round(p.entry_price / 10) * 10, p.direction)
-            groups[key].append(p)
-        for group in groups.values():
-            if len(group) > 1:
-                for p in group:
-                    p.confidence = min(p.confidence + 8 * (len(group) - 1), 92)
-
-    except Exception as e:
-        logger.error(f"Pattern detection failed: {e}")
-
-    # ── Score by profit potential: RR × confidence ────────────────────────────
-    def profit_score(p) -> float:
-        risk = abs(p.entry_price - p.stop_loss)
-        if risk == 0:
-            return 0
-        reward = abs(p.take_profit - p.entry_price)
-        return (reward / risk) * (p.confidence / 100)
-
-    all_patterns.sort(key=profit_score, reverse=True)
-
-    # ── Build signals with correlation filter ────────────────────────────────
-    signals: list[dict] = []
-    seen_zones: set[tuple] = set()
-    direction_count = {"BUY": 0, "SELL": 0}  # Track positions per direction
-
-    for pattern in all_patterns:
-        if pattern.confidence < config["signal_confidence"]:
-            continue
-        if len(signals) >= config["max_signals"]:
-            break
-        
-        # NEW: Check max positions per direction
-        if direction_count[pattern.direction] >= config.get("max_positions_per_direction", 1):
-            logger.debug(f"Skipping {pattern.direction} - max positions reached")
+    for timeframe, lookback in zip(config["timeframes"], config["lookback"]):
+        source_result = await loop.run_in_executor(None, fetch_candles, target_symbol, timeframe, lookback)
+        if source_result is None:
+            logger.warning(f"  {timeframe}: no candle source available")
             continue
 
-        # NEW: Check minimum entry separation
-        min_sep = config.get("min_entry_separation", 50.0)
-        too_close = False
-        for existing_sig in signals:
-            if abs(pattern.entry_price - existing_sig["entry_price"]) < min_sep:
-                too_close = True
-                logger.debug(f"Skipping entry @ {pattern.entry_price} - too close to {existing_sig['entry_price']}")
-                break
-        if too_close:
-            continue
+        df = await loop.run_in_executor(None, compute_indicators, source_result.df)
+        source_result.df = df
+        datasets[timeframe] = (source_result, df)
 
-        zone = (round(pattern.entry_price / 10) * 10, pattern.direction)
-        if zone in seen_zones:
-            continue
-        seen_zones.add(zone)
+        if current_price is None and not df.empty:
+            current_price = float(df.iloc[-1]["close"])
 
-        # Build raw SL/TP then clamp to style limits
-        raw_risk = abs(pattern.entry_price - pattern.stop_loss)
-        sign = 1 if pattern.direction == "BUY" else -1
-        raw_sl  = pattern.stop_loss
-        raw_tp1 = round(pattern.entry_price + raw_risk * config["rr_min"]    * sign, 2)
-        raw_tp2 = round(pattern.entry_price + raw_risk * config["rr_target"] * sign, 2)
-        sl, tp1, tp2 = clamp_levels(pattern.entry_price, raw_sl, raw_tp1, raw_tp2, pattern.direction, config)
-        
-        # Calculate real RR after spread
-        effective_risk = abs(pattern.entry_price - sl) + GOLD_SPREAD_POINTS
-        effective_reward = abs(tp1 - pattern.entry_price) - GOLD_SPREAD_POINTS
-        real_rr = effective_reward / effective_risk if effective_risk > 0 else 0
-        
-        logger.info(f"  Signal: {pattern.direction} @ {pattern.entry_price} | SL: {abs(pattern.entry_price - sl):.1f}pts | TP1: {abs(tp1 - pattern.entry_price):.1f}pts | Real RR: 1:{real_rr:.2f}")
-
-        signals.append({
-            "direction":     pattern.direction,
-            "entry_price":   pattern.entry_price,
-            "stop_loss":     sl,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
-            "confidence":    round(pattern.confidence, 1),
-            "reasoning":     f"{pattern.type.value} ({getattr(pattern, 'timeframe', '?')}): {pattern.description} | Real RR 1:{real_rr:.2f} after {GOLD_SPREAD_POINTS}pt spread",
-            "trading_style": style,
-            "patterns":      [{"type": pattern.type.value, "confidence": pattern.confidence, "description": pattern.description}],
-            "auto_execute":  pattern.confidence >= config["auto_execute_confidence"],
-        })
-        
-        direction_count[pattern.direction] += 1
-
-    # ── Fallback: single trend-aligned signal only if ZERO patterns found ─────
-    if len(signals) == 0 and trend in ("BULLISH", "BEARISH"):
-        direction = "BUY" if trend == "BULLISH" else "SELL"
-        sl_mult   = config["atr_sl_mult"]
-        sign_     = 1 if direction == "BUY" else -1
-
-        entry   = round(current_price, 2)
-        sl_dist = atr * sl_mult
-        raw_sl  = round(entry - sl_dist * sign_, 2)
-        raw_tp1 = round(entry + sl_dist * config["rr_min"]    * sign_, 2)
-        raw_tp2 = round(entry + sl_dist * config["rr_target"] * sign_, 2)
-        sl, tp1, tp2 = clamp_levels(entry, raw_sl, raw_tp1, raw_tp2, direction, config)
-
-        effective_risk = abs(entry - sl) + GOLD_SPREAD_POINTS
-        effective_reward = abs(tp1 - entry) - GOLD_SPREAD_POINTS
-        real_rr = effective_reward / effective_risk if effective_risk > 0 else 0
-
-        logger.info(f"  No patterns found — single ATR fallback: {direction} (trend={trend})")
-        signals.append({
-            "direction":     direction,
-            "entry_price":   entry,
-            "stop_loss":     sl,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
-            "confidence":    50.0,
-            "reasoning":     f"{style} ATR fallback | {direction} | Trend: {trend} | SL: {abs(entry - sl):.1f} pts | Real RR: 1:{real_rr:.2f}",
-            "trading_style": style,
-            "patterns":      [],
-            "auto_execute":  False,  # Never auto-execute a fallback
-        })
-
-    # ── AI signal (with fallback chain) ─────────────────────────────────────
-    api_key  = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    provider = os.getenv("AI_PROVIDER", "openai")
-
-    if api_key and all_patterns:
+        recognizer = PatternRecognizer(min_confidence=config["min_pattern_confidence"])
         try:
-            ff = ForexFactoryService()
-            calendar_events = ff.get_weekly_events()[:5]
-            ai_signal = await AITradingEngine.generate_signal_with_fallback(
-                current_price=current_price,
-                trend=trend,
-                indicators=indicators,
-                calendar_events=calendar_events,
-                patterns=all_patterns[:5],
-                trading_style=style,
+            tf_patterns = await loop.run_in_executor(None, recognizer.detect_all_patterns, df)
+        except Exception as exc:
+            logger.error(f"Pattern detection failed for {timeframe}: {exc}")
+            tf_patterns = []
+
+        for pattern in tf_patterns:
+            pattern.timeframe = timeframe
+        patterns_by_timeframe[timeframe] = tf_patterns
+
+        logger.info(
+            f"  {timeframe}: source={source_result.source} live={source_result.is_live} patterns={len(tf_patterns)}"
+        )
+
+    primary_tf = config["timeframes"][0]
+    if primary_tf not in datasets:
+        batch = build_no_data_batch()
+        await manager.broadcast_json({"type": "SIGNAL_BATCH", "data": batch.model_dump(mode="json")})
+        return batch
+
+    latest_tick = manager.latest_tick or {}
+    if latest_tick.get("symbol", target_symbol) == target_symbol and latest_tick.get("bid"):
+        current_price = float(latest_tick["bid"])
+    else:
+        current_price = current_price or float(datasets[primary_tf][1].iloc[-1]["close"])
+
+    snapshots: dict[str, object] = {}
+    for timeframe, (source_result, df) in datasets.items():
+        snapshots[timeframe] = build_snapshot(
+            df=df,
+            timeframe=timeframe,
+            source=source_result.source,
+            is_live=source_result.is_live,
+            current_price=current_price,
+        )
+
+    # ── Broadcast Market State snapshot for live dashboard metrics ──
+    primary_snapshot = snapshots[primary_tf]
+    market_state_payload = {
+        "timeframe": primary_snapshot.timeframe,
+        "source": primary_snapshot.source,
+        "is_live": primary_snapshot.is_live,
+        "current_price": round(primary_snapshot.current_price, 2),
+        "atr": round(primary_snapshot.atr, 2),
+        "avg_body": round(primary_snapshot.avg_body, 2),
+        "body_strength": round(primary_snapshot.body_strength, 3),
+        "upper_wick": round(primary_snapshot.upper_wick, 2),
+        "lower_wick": round(primary_snapshot.lower_wick, 2),
+        "close_location": round(primary_snapshot.close_location, 3),
+        "relative_volume": round(primary_snapshot.relative_volume, 3),
+        "efficiency_ratio": round(primary_snapshot.efficiency_ratio, 3),
+        "compression_ratio": round(primary_snapshot.compression_ratio, 3),
+        "ema_slope": round(primary_snapshot.ema_slope, 4),
+        "range_high": round(primary_snapshot.range_high, 2),
+        "range_low": round(primary_snapshot.range_low, 2),
+        "range_width": round(primary_snapshot.range_width, 2),
+        "boundary_touches_high": primary_snapshot.boundary_touches_high,
+        "boundary_touches_low": primary_snapshot.boundary_touches_low,
+        "recent_high": round(primary_snapshot.recent_high, 2),
+        "recent_low": round(primary_snapshot.recent_low, 2),
+        "support": round(primary_snapshot.support, 2),
+        "resistance": round(primary_snapshot.resistance, 2),
+        "recent_minor_high": round(primary_snapshot.recent_minor_high, 2),
+        "prior_minor_high": round(primary_snapshot.prior_minor_high, 2),
+        "recent_minor_low": round(primary_snapshot.recent_minor_low, 2),
+        "prior_minor_low": round(primary_snapshot.prior_minor_low, 2),
+        "swings": primary_snapshot.swings,
+        "regime": primary_snapshot.regime,
+        "regime_confidence": round(primary_snapshot.regime_confidence, 1),
+        "notes": primary_snapshot.notes,
+        "symbol": target_symbol,
+        "trading_style": style,
+    }
+    await manager.broadcast_json({"type": "MARKET_STATE", "data": market_state_payload})
+
+    batch = build_analysis_batch(
+        symbol=target_symbol,
+        style=style,
+        snapshots=snapshots,
+        style_cfg=config,
+        patterns_by_timeframe=patterns_by_timeframe,
+    )
+
+    def matching_patterns(signal: TradeSignal) -> list[dict]:
+        primary_snapshot = snapshots[primary_tf]
+        tolerance = max(getattr(primary_snapshot, "atr", 1.0) * 1.2, 0.1)
+        matches: list[dict] = []
+        for tf_patterns in patterns_by_timeframe.values():
+            for pattern in tf_patterns:
+                direction = getattr(pattern, "direction", "")
+                entry = float(getattr(pattern, "entry_price", signal.entry_price))
+                if direction != signal.direction or abs(entry - signal.entry_price) > tolerance:
+                    continue
+                matches.append(
+                    {
+                        "type": getattr(getattr(pattern, "type", None), "value", str(getattr(pattern, "type", "pattern"))),
+                        "confidence": round(float(getattr(pattern, "confidence", 0.0)), 1),
+                        "description": getattr(pattern, "description", ""),
+                    }
+                )
+        matches.sort(key=lambda item: item["confidence"], reverse=True)
+        return matches[:3]
+
+    batch.primary.patterns = matching_patterns(batch.primary)
+    for backup in batch.backups:
+        backup.patterns = matching_patterns(backup)
+
+    api_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    provider = os.getenv("AI_PROVIDER", "openai")
+    if api_key and batch.primary.direction in ("BUY", "SELL"):
+        try:
+            batch = await AITradingEngine.explain_batch_with_fallback(
+                batch=batch,
                 primary_provider=provider,
                 primary_api_key=api_key,
             )
-            ai_signal.trading_style = style  # enforce
+        except Exception as exc:
+            logger.error(f"AI batch explanation failed: {exc}")
 
-            if ai_signal.direction in ("BUY", "SELL"):
-                # Validate entry price — reject if AI hallucinated a price far from market
-                entry_drift = abs(ai_signal.entry_price - current_price) / current_price
-                if entry_drift > 0.005:  # > 0.5% away from current price
-                    logger.warning(f"  AI entry price {ai_signal.entry_price} is {entry_drift:.2%} from market {current_price} — snapping to market")
-                    ai_signal.entry_price = current_price
+    ff = ForexFactoryService()
+    calendar_events = ff.get_weekly_events()[:5]
+    primary_snapshot = snapshots[primary_tf]
+    primary_row = datasets[primary_tf][1].iloc[-1]
+    indicators = {
+        "RSI_14": round(float(primary_row.get("RSI_14", 50.0)), 2),
+        "MACD_12_26_9": round(float(primary_row.get("MACDh_12_26_9", 0.0)), 4),
+        "ATRr_14": round(float(primary_row.get("ATRr_14", getattr(primary_snapshot, "atr", 0.0))), 2),
+        "EMA_9": round(float(primary_row.get("EMA_9", 0.0)), 2),
+        "EMA_21": round(float(primary_row.get("EMA_21", 0.0)), 2),
+        "EMA_50": round(float(primary_row.get("EMA_50", 0.0)), 2),
+        "symbol": target_symbol,
+    }
+    trend = getattr(primary_snapshot, "regime", "neutral").upper()
 
-                risk = abs(ai_signal.entry_price - ai_signal.stop_loss)
-                sign = 1 if ai_signal.direction == "BUY" else -1
-                raw_tp1 = round(ai_signal.entry_price + risk * config["rr_min"]    * sign, 2)
-                raw_tp2 = round(ai_signal.entry_price + risk * config["rr_target"] * sign, 2)
-                sl, tp1, tp2 = clamp_levels(ai_signal.entry_price, ai_signal.stop_loss, raw_tp1, raw_tp2, ai_signal.direction, config)
-                ai_signal.stop_loss     = sl
-                ai_signal.take_profit_1 = tp1
-                ai_signal.take_profit_2 = tp2
+    for signal in [batch.primary, *batch.backups]:
+        signal_id = db.save_signal(
+            signal=signal,
+            indicators=indicators,
+            calendar_events=calendar_events,
+            current_price=current_price,
+            trend=trend,
+            ai_provider=provider if api_key else "deterministic",
+            ai_model="bounded-explainer" if api_key else "rule-engine",
+            regime_summary=batch.regime_summary,
+        )
+        if signal_id not in {"db_disabled", "error"}:
+            signal.signal_id = signal_id
+            signal.id = signal_id
 
-                signal_id = await db.save_signal(
-                    signal=ai_signal, indicators=indicators, calendar_events=calendar_events,
-                    current_price=current_price, trend=trend, ai_provider=provider, ai_model="fallback-chain",
-                )
-                sd = ai_signal.model_dump()
-                sd["signal_id"]    = signal_id
-                sd["patterns"]     = [{"type": p.type.value, "confidence": p.confidence, "description": p.description} for p in all_patterns[:3]]
-                sd["auto_execute"] = ai_signal.confidence >= config["auto_execute_confidence"]
+    batch_payload = batch.model_dump(mode="json")
+    logger.info(
+        f"Broadcasting ranked batch: primary={batch.primary.direction} "
+        f"setup={batch.primary.setup_type} backups={len(batch.backups)}"
+    )
+    await manager.broadcast_json({"type": "SIGNAL_BATCH", "data": batch_payload})
 
-                zone = (round(ai_signal.entry_price / 10) * 10, ai_signal.direction)
-                if zone not in seen_zones:
-                    signals.insert(0, sd)
-                    logger.info(f"  AI: {ai_signal.direction} @ {ai_signal.entry_price} conf={ai_signal.confidence}%")
-        except Exception as e:
-            logger.error(f"AI signal failed (all providers): {e}")
+    primary_payload = batch.primary.model_dump(mode="json")
+    primary_payload["auto_execute"] = (
+        batch.primary.direction in ("BUY", "SELL")
+        and batch.primary.confidence >= config["auto_execute_confidence"]
+    )
+    await manager.broadcast_json(
+        {
+            "type": "SIGNAL",
+            "action": "PLACE_ORDER" if primary_payload["auto_execute"] else "DISPLAY",
+            "data": primary_payload,
+        }
+    )
 
-    # ── Broadcast ─────────────────────────────────────────────────────────────
-    logger.info(f"Broadcasting {len(signals)} {style} signals")
-    for sig in signals:
-        await manager.broadcast_json({
-            "type":   "SIGNAL",
-            "action": "PLACE_ORDER" if sig.get("auto_execute") else "DISPLAY",
-            "data":   sig,
-        })
+    return batch
