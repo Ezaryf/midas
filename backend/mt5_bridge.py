@@ -275,7 +275,7 @@ async def run(auto_trade: bool = False):
             from app.services.position_monitor import get_position_monitor
             position_monitor = get_position_monitor()
             if position_monitor:
-                await position_monitor.start()
+                position_monitor.start()
         except Exception as e:
             logger.error(f"Failed to start position monitor: {e}")
 

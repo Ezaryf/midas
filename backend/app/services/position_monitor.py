@@ -88,7 +88,7 @@ class PositionMonitor:
             try:
                 await self._task
             except asyncio.CancelledError:
-                raise
+                pass  # Task was cancelled - that's fine on shutdown
         
         logger.info("Position monitor stopped")
     

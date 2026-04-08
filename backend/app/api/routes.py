@@ -55,6 +55,14 @@ class SetTargetSymbolRequest(BaseModel):
     target_symbol: str = "XAUUSD"
 
 
+class UpdateSettingsRequest(BaseModel):
+    max_concurrent_positions: int | None = None
+    max_daily_trades: int | None = None
+    max_risk_percent: float | None = None
+    daily_loss_limit: float | None = None
+    news_blackout_minutes: int | None = None
+
+
 @router.post("/signals/force-generate")
 async def force_generate_signal(req: ForceGenerateRequest = ForceGenerateRequest()):
     from app.core.loop import run_analysis_cycle
@@ -94,6 +102,45 @@ async def set_target_symbol(req: SetTargetSymbolRequest):
     trading_state.set_target_symbol(req.target_symbol)
     logger.info(f"Target symbol changed to: {req.target_symbol}")
     return {"status": "ok", "target_symbol": req.target_symbol}
+
+
+@router.post("/settings")
+async def update_settings(req: UpdateSettingsRequest):
+    from app.services.risk_manager import get_risk_manager
+
+    changes = []
+    risk_manager = get_risk_manager()
+    
+    if req.max_concurrent_positions is not None:
+        os.environ["MAX_CONCURRENT_POSITIONS"] = str(req.max_concurrent_positions)
+        if risk_manager:
+            risk_manager.config.max_concurrent_positions = req.max_concurrent_positions
+        changes.append(f"max_concurrent_positions={req.max_concurrent_positions}")
+    
+    if req.max_daily_trades is not None:
+        os.environ["MAX_DAILY_TRADES"] = str(req.max_daily_trades)
+        changes.append(f"max_daily_trades={req.max_daily_trades}")
+    
+    if req.max_risk_percent is not None:
+        os.environ["MAX_RISK_PERCENT"] = str(req.max_risk_percent)
+        if risk_manager:
+            risk_manager.config.max_risk_percent = req.max_risk_percent
+        changes.append(f"max_risk_percent={req.max_risk_percent}")
+    
+    if req.daily_loss_limit is not None:
+        os.environ["DAILY_LOSS_LIMIT"] = str(req.daily_loss_limit)
+        if risk_manager:
+            risk_manager.config.daily_loss_limit = req.daily_loss_limit
+        changes.append(f"daily_loss_limit={req.daily_loss_limit}")
+    
+    if req.news_blackout_minutes is not None:
+        os.environ["NEWS_BLACKOUT_MINUTES"] = str(req.news_blackout_minutes)
+        if risk_manager:
+            risk_manager.config.news_blackout_minutes = req.news_blackout_minutes
+        changes.append(f"news_blackout_minutes={req.news_blackout_minutes}")
+    
+    logger.info(f"Settings updated: {', '.join(changes)}")
+    return {"status": "ok", "changes": changes}
 
 
 @router.post("/signals/execute")

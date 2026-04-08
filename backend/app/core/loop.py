@@ -14,7 +14,7 @@ LONDON_SESSION = (8, 12)
 NY_SESSION = (13, 17)
 
 # Daily limits
-MAX_DAILY_TRADES = 5
+MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "5"))
 MAX_DAILY_LOSS_PCT = 2.0
 MAX_CONSECUTIVE_LOSSES = 3
 
@@ -79,8 +79,9 @@ async def background_trading_loop():
             await asyncio.sleep(ANALYSIS_INTERVAL)
             state.check_and_reset_daily()
 
-            if state.daily_trades >= MAX_DAILY_TRADES:
-                logger.warning(f"Daily trade limit reached ({MAX_DAILY_TRADES}). Pausing until tomorrow.")
+            max_daily_trades = int(os.getenv("MAX_DAILY_TRADES", "5"))
+            if state.daily_trades >= max_daily_trades:
+                logger.warning(f"Daily trade limit reached ({max_daily_trades}). Pausing until tomorrow.")
                 await asyncio.sleep(300)
                 continue
 
@@ -121,11 +122,11 @@ def is_trading_session_active() -> bool:
 
 def is_high_impact_news_upcoming(minutes_ahead: int = 30) -> bool:
     try:
-        from app.services.forex_factory import ForexFactoryService
+        from app.services.forex_factory import get_forex_factory
         from datetime import timedelta
         from dateutil import parser as dtparser
 
-        ff = ForexFactoryService()
+        ff = get_forex_factory()
         events = ff.get_weekly_events()
 
         now = datetime.now(timezone.utc)

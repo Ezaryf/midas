@@ -1,26 +1,49 @@
 import logging
+import time
 import requests
 
 logger = logging.getLogger(__name__)
 
+# Singleton instance for caching across calls
+_forex_factory_instance = None
+
+def get_forex_factory():
+    global _forex_factory_instance
+    if _forex_factory_instance is None:
+        _forex_factory_instance = ForexFactoryService()
+    return _forex_factory_instance
+
 class ForexFactoryService:
     def __init__(self):
-        self.url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json" # Forex Factory JSON proxy
+        self.url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        self._cache = None
+        self._cache_time = 0
+        self._cache_ttl = 0  # No cache - fetch fresh every call
 
     def get_weekly_events(self):
         """Fetches the weekly economic calendar events."""
+        now = time.time()
+        
+        # Skip cache if TTL is 0 (disabled)
+        if self._cache_ttl > 0 and self._cache is not None and (now - self._cache_time) < self._cache_ttl:
+            return self._cache
+        
         try:
-            response = requests.get(self.url)
+            response = requests.get(self.url, timeout=10)
             response.raise_for_status()
             data = response.json()
             
-            # Filter for USD only in MVP
             usd_events = [event for event in data if event.get("country") == "USD"]
+            
+            # Update cache
+            self._cache = usd_events
+            self._cache_time = now
+            
             return usd_events
             
         except requests.RequestException as e:
             logger.error(f"Failed to fetch ForexFactory calendar: {e}")
-            return []
+            return self._cache if self._cache is not None else []
 
 if __name__ == "__main__":
     service = ForexFactoryService()
