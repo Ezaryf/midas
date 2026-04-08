@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useMidasStore } from "@/store/useMidasStore";
 import { useShallow } from 'zustand/react/shallow';
 
+const STALE_TICK_MS = 8_000;
+
 export interface LivePrice {
   price: number;
   change: number;
@@ -12,41 +14,66 @@ export interface LivePrice {
   low: number;
   bid: number;
   ask: number;
+  spread: number;
   updatedAt: string;
 }
 
 export function useLivePrice() {
-  const { currentPrice, targetSymbol, isConnected } = useMidasStore(useShallow(s => ({
+  const { currentPrice, targetSymbol, isConnected, calibrationFactor } = useMidasStore(useShallow(s => ({
     currentPrice: s.currentPrice,
     targetSymbol: s.targetSymbol,
-    isConnected: s.isConnected
+    isConnected: s.isConnected,
+    calibrationFactor: s.calibrationFactor
   })));
   
   const [tick, setTick] = useState<"up" | "down" | null>(null);
 
   // Track session open price (first price of the session)
   const [sessionData, setSessionData] = useState<{ open: number; high: number; low: number } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   
   const prevPriceRef = useRef<number | null>(null);
   const tickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Derive symbols to check for mismatches
-  const currentSymbol = (currentPrice?.symbol || "XAUUSD").toUpperCase();
-  const activeSymbol = (targetSymbol || "XAUUSD").toUpperCase();
-  const isSymbolMatch = isConnected && currentSymbol === activeSymbol;
+  const normalizeSymbol = (s: string) => 
+    s.toUpperCase()
+     .replace(/[^A-Z0-9]/g, '') // Remove dots, slashes, etc.
+     .replace(/^GOLD$|^XAUUSD$|^XAUUSD[A-Z]$|^GC[A-Z0-9]+$/g, 'XAUUSD'); // Map all gold variants to XAUUSD
+
+  const currentSymbolRaw = currentPrice?.symbol || "";
+  const currentSymbolNormalized = normalizeSymbol(currentSymbolRaw || "XAUUSD");
+  const activeSymbolNormalized = normalizeSymbol(targetSymbol || "XAUUSD");
   
-  const [prevActiveSymbol, setPrevActiveSymbol] = useState(activeSymbol);
+  // For display in error messages
+  const currentSymbol = currentSymbolRaw.toUpperCase();
+  const activeSymbol = (targetSymbol || "XAUUSD").toUpperCase();
 
-  // Extract primitives
-  const bid = currentPrice?.bid ?? 0;
-  const ask = currentPrice?.ask ?? 0;
+  const isSymbolMatch = isConnected && (
+    !currentSymbolRaw || // If no data yet, assume match for loading states
+    currentSymbolNormalized === activeSymbolNormalized
+  );
+
+  // Extract primitives and apply calibration
+  const rawBid = currentPrice?.bid ?? 0;
+  const rawAsk = currentPrice?.ask ?? 0;
+  
+  const bid = rawBid * calibrationFactor;
+  const ask = rawAsk * calibrationFactor;
+  
   const time = currentPrice?.time ?? "";
+  const spread = Math.max(0, +(ask - bid).toFixed(2));
 
-  // Reset session tracking when symbol changes (React 18+ idiom)
-  if (activeSymbol !== prevActiveSymbol) {
-    setPrevActiveSymbol(activeSymbol);
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     setSessionData(null);
-  }
+    prevPriceRef.current = null;
+    setTick(null);
+  }, [activeSymbol]);
 
   useEffect(() => {
     if (!isSymbolMatch || bid <= 1) return;
@@ -78,18 +105,30 @@ export function useLivePrice() {
 
   // Derive all data synchronously
   const result = useMemo(() => {
+    const updatedAt = time || null;
+    const updatedMs = updatedAt ? Date.parse(updatedAt) : NaN;
+    const ageMs = Number.isFinite(updatedMs) ? Math.max(0, nowMs - updatedMs) : null;
+    const isStale = isConnected && isSymbolMatch && ageMs !== null && ageMs > STALE_TICK_MS;
+
     if (!isConnected || !isSymbolMatch || bid <= 1 || !sessionData) {
       let error: string | null = null;
       if (!isConnected) {
         error = "MT5 Bridge Offline";
       } else if (!isSymbolMatch) {
         error = `Symbol Mismatch (Midas: ${activeSymbol}, MT5: ${currentSymbol})`;
+      } else if (isStale) {
+        error = "Live feed stale";
       }
 
       return {
         data: null as LivePrice | null,
         loading: isConnected && isSymbolMatch && bid > 1 && !sessionData,
         error,
+        isStale,
+        ageMs,
+        isSymbolMatch,
+        currentSymbol,
+        activeSymbol,
         tick,
       };
     }
@@ -106,13 +145,19 @@ export function useLivePrice() {
         low: sessionData.low,
         bid,
         ask,
-        updatedAt: time || new Date().toISOString(),
+        spread,
+        updatedAt: updatedAt || new Date().toISOString(),
       } as LivePrice,
       loading: false,
-      error: null as string | null,
+      error: isStale ? "Live feed stale" : null as string | null,
+      isStale,
+      ageMs,
+      isSymbolMatch,
+      currentSymbol,
+      activeSymbol,
       tick,
     };
-  }, [bid, ask, time, isConnected, isSymbolMatch, activeSymbol, sessionData, tick, currentSymbol]);
+  }, [bid, ask, spread, time, isConnected, isSymbolMatch, activeSymbol, sessionData, tick, currentSymbol, nowMs]);
 
   return result;
 }

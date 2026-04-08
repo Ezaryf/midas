@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { startTransition, useEffect, useRef } from 'react';
 import { useMidasStore, type PriceUpdate, type TradeSignal } from '@/store/useMidasStore';
+import type { AnalysisBatch } from '@/lib/types';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/mt5';
 const RETRY_DELAY = 5000;
@@ -39,12 +40,21 @@ export const useSocket = () => {
           const store = useMidasStore.getState();
           if (payload.type === 'TICK') {
             store.setPrice(payload.data as PriceUpdate);
+          } else if (payload.type === 'SIGNAL_BATCH') {
+            const batch = payload.data as AnalysisBatch;
+            if (!batch?.primary) return;
+            startTransition(() => {
+              store.setAnalysisBatch(batch);
+              store.addSignalToHistory(batch.primary);
+              batch.backups?.forEach((backup) => store.addSignalToHistory(backup));
+            });
           } else if (payload.type === 'SIGNAL') {
             const signal = payload.data as TradeSignal;
             if (!signal.trading_style) signal.trading_style = 'Scalper';
-            // Always update active signal AND add to history
-            store.setActiveSignal(signal);
-            store.addSignalToHistory(signal);
+            startTransition(() => {
+              store.setActiveSignal(signal);
+              store.addSignalToHistory(signal);
+            });
             
             // Show notification
             if (Notification.permission === 'granted') {
@@ -56,11 +66,15 @@ export const useSocket = () => {
             
             // Log to console for debugging
             console.log(`[Midas] New ${signal.trading_style} signal: ${signal.direction} @ ${signal.entry_price} (${signal.confidence}% confidence)`);
+          } else if (payload.type === 'MARKET_STATE') {
+            const ms = payload.data;
+            if (ms) store.setMarketState(ms);
           }
         } catch {
           // Malformed message — ignore silently
         }
       };
+
 
       ws.onclose = (e) => {
         if (!mountedRef.current) return;

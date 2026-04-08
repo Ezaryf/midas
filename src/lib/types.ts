@@ -4,7 +4,9 @@
  */
 export interface TradeSignal {
   id?: string;
+  signal_id?: string;
   symbol?: string;
+  analysis_batch_id?: string;
   timestamp?: string;
   direction: "BUY" | "SELL" | "HOLD";
   entry_price: number;
@@ -14,6 +16,16 @@ export interface TradeSignal {
   confidence: number;
   reasoning: string;
   trading_style: "Scalper" | "Intraday" | "Swing";
+  setup_type?: string;
+  market_regime?: string;
+  score?: number;
+  rank?: number;
+  is_primary?: boolean;
+  entry_window_low?: number;
+  entry_window_high?: number;
+  context_tags?: string[];
+  source?: string;
+  auto_execute?: boolean;
   // UI-only status (not from backend)
   status?: "PENDING" | "ACTIVE" | "HIT_TP1" | "HIT_TP2" | "STOPPED" | "EXPIRED";
   outcome?: number;
@@ -23,6 +35,55 @@ export interface TradeSignal {
     confidence: number;
     description: string;
   }>;
+}
+
+export interface AnalysisBatch {
+  analysis_batch_id: string;
+  symbol: string;
+  trading_style: "Scalper" | "Intraday" | "Swing";
+  evaluated_at: string;
+  market_regime: string;
+  regime_summary: string;
+  source: string;
+  source_is_live: boolean;
+  primary: TradeSignal;
+  backups: TradeSignal[];
+}
+
+export interface MarketState {
+  timeframe: string;
+  source: string;
+  is_live: boolean;
+  current_price: number;
+  atr: number;
+  avg_body: number;
+  body_strength: number;
+  upper_wick: number;
+  lower_wick: number;
+  close_location: number;
+  relative_volume: number;
+  efficiency_ratio: number;
+  compression_ratio: number;
+  ema_slope: number;
+  range_high: number;
+  range_low: number;
+  range_width: number;
+  boundary_touches_high: number;
+  boundary_touches_low: number;
+  recent_high: number;
+  recent_low: number;
+  support: number;
+  resistance: number;
+  recent_minor_high: number;
+  prior_minor_high: number;
+  recent_minor_low: number;
+  prior_minor_low: number;
+  swings: Array<{ type: "high" | "low"; index: number; price: number }>;
+  regime: string;
+  regime_confidence: number;
+  notes: string[];
+  symbol: string;
+  trading_style: string;
 }
 
 /** Adapts the mock-data camelCase Signal to the canonical TradeSignal */

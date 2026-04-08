@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TradeSignal } from '@/lib/types';
+import type { AnalysisBatch, TradeSignal, MarketState } from '@/lib/types';
 
 export type { TradeSignal };
 
@@ -18,12 +18,18 @@ export interface PriceUpdate {
 interface MidasState {
   currentPrice: PriceUpdate | null;
   activeSignal: TradeSignal | null;
+  latestBatch: AnalysisBatch | null;
+  marketState: MarketState | null;
   signalHistory: TradeSignal[];
   isConnected: boolean;
   targetSymbol: string;
+  calibrationFactor: number;
 
   setPrice: (price: PriceUpdate) => void;
+  setCalibrationFactor: (factor: number) => void;
   setActiveSignal: (signal: TradeSignal) => void;
+  setAnalysisBatch: (batch: AnalysisBatch) => void;
+  setMarketState: (state: MarketState) => void;
   clearActiveSignal: () => void;
   addSignalToHistory: (signal: TradeSignal) => void;
   setConnected: (status: boolean) => void;
@@ -33,20 +39,35 @@ interface MidasState {
 export const useMidasStore = create<MidasState>((set) => ({
   currentPrice: null,
   activeSignal: null,
+  latestBatch: null,
+  marketState: null,
   signalHistory: [],
   isConnected: false,
   targetSymbol: "XAUUSD",
+  calibrationFactor: 1.0,
 
   setPrice: (price) => set({ currentPrice: price }),
+  setCalibrationFactor: (factor) => set({ calibrationFactor: factor }),
   setActiveSignal: (signal) => set({ activeSignal: signal }),
+  setAnalysisBatch: (batch) => set({ latestBatch: batch, activeSignal: batch.primary }),
+  setMarketState: (ms) => set({ marketState: ms }),
   clearActiveSignal: () => set({ activeSignal: null }),
   addSignalToHistory: (signal) =>
     set((state) => {
-      // Avoid exact duplicates (same entry_price + direction + symbol)
       const symbol = signal.symbol || state.targetSymbol;
-      const key = `${symbol}-${signal.direction}-${signal.entry_price}`;
+      const key =
+        signal.id ||
+        signal.signal_id ||
+        (signal.analysis_batch_id
+          ? `${signal.analysis_batch_id}-${signal.rank ?? 1}`
+          : `${symbol}-${signal.direction}-${signal.entry_price}`);
       const exists = state.signalHistory.some(
-        s => `${s.symbol || state.targetSymbol}-${s.direction}-${s.entry_price}` === key
+        (s) =>
+          (s.id ||
+            s.signal_id ||
+            (s.analysis_batch_id
+              ? `${s.analysis_batch_id}-${s.rank ?? 1}`
+              : `${s.symbol || state.targetSymbol}-${s.direction}-${s.entry_price}`)) === key
       );
       if (exists) return state;
       return { signalHistory: [signal, ...state.signalHistory].slice(0, 100) };

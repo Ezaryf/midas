@@ -25,6 +25,9 @@ export function useSignalHistory() {
       if (!error && data) {
         setSignals(data.map(r => ({
           id:            r.id,
+          signal_id:     r.id,
+          symbol:        r.symbol,
+          analysis_batch_id: r.analysis_batch_id,
           timestamp:     r.created_at,
           direction:     r.direction,
           entry_price:   r.entry_price,
@@ -34,6 +37,15 @@ export function useSignalHistory() {
           confidence:    r.confidence,
           reasoning:     r.reasoning,
           trading_style: r.trading_style,
+          setup_type:    r.setup_type,
+          market_regime: r.market_regime,
+          score:         r.score,
+          rank:          r.rank,
+          is_primary:    r.is_primary,
+          entry_window_low: r.entry_window_low,
+          entry_window_high: r.entry_window_high,
+          context_tags:  r.context_tags,
+          source:        r.source,
           status:        r.status,
           outcome:       r.outcome,
         })));
@@ -50,6 +62,9 @@ export function useSignalHistory() {
           const r = payload.new;
           setSignals(prev => [{
             id:            r.id,
+            signal_id:     r.id,
+            symbol:        r.symbol,
+            analysis_batch_id: r.analysis_batch_id,
             timestamp:     r.created_at,
             direction:     r.direction,
             entry_price:   r.entry_price,
@@ -59,6 +74,15 @@ export function useSignalHistory() {
             confidence:    r.confidence,
             reasoning:     r.reasoning,
             trading_style: r.trading_style,
+            setup_type:    r.setup_type,
+            market_regime: r.market_regime,
+            score:         r.score,
+            rank:          r.rank,
+            is_primary:    r.is_primary,
+            entry_window_low: r.entry_window_low,
+            entry_window_high: r.entry_window_high,
+            context_tags:  r.context_tags,
+            source:        r.source,
             status:        r.status,
             outcome:       r.outcome,
           }, ...prev].slice(0, 50));
