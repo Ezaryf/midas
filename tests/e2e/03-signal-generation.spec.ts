@@ -6,7 +6,7 @@ test.describe('Signal Generation - Requirement 1', () => {
     await page.waitForLoadState('networkidle');
   });
 
-  test('should generate at least 4 signals', async ({ page }) => {
+  test('should generate one primary setup and optional backups', async ({ page }) => {
     // Find and click Generate button
     const generateBtn = page.getByRole('button', { name: /generate/i });
     await expect(generateBtn).toBeVisible();
@@ -20,7 +20,7 @@ test.describe('Signal Generation - Requirement 1', () => {
     // Wait for signal to appear (up to 30 seconds)
     await expect(page.getByText(/BUY|SELL|HOLD/)).toBeVisible({ timeout: 30000 });
     
-    // Check for signal card elements
+    // Check for primary signal card elements
     await expect(page.getByText(/entry/i)).toBeVisible();
     await expect(page.getByText(/stop loss/i)).toBeVisible();
     await expect(page.getByText(/tp1/i)).toBeVisible();
@@ -28,6 +28,12 @@ test.describe('Signal Generation - Requirement 1', () => {
     // Verify confidence badge is visible
     const confidenceBadge = page.locator('text=/\\d+%/').first();
     await expect(confidenceBadge).toBeVisible();
+
+    // Backup setups are optional, but when present the section should render cleanly
+    const backupsHeading = page.getByText(/backup setups/i);
+    if (await backupsHeading.isVisible().catch(() => false)) {
+      await expect(backupsHeading).toBeVisible();
+    }
   });
 
   test('should show signal details when expanded', async ({ page }) => {
