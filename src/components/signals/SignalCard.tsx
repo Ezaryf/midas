@@ -106,7 +106,7 @@ Reasoning: ${signal.reasoning}`;
               )}
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 mt-1">
                 <span
                   className={`text-sm font-bold ${
                     isHold
@@ -119,9 +119,14 @@ Reasoning: ${signal.reasoning}`;
                   {signal.direction}
                 </span>
                 <span className="text-xs text-text-muted">{(signal.symbol || "XAU/USD").toUpperCase()}</span>
-                <span className="text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded-md">
+                <span className="text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded-md whitespace-nowrap">
                   {signal.trading_style}
                 </span>
+                {signal.setup_type && (
+                  <span className="text-[10px] text-gold bg-gold/10 px-1.5 py-0.5 rounded-md uppercase whitespace-nowrap">
+                    {signal.setup_type.replaceAll("_", " ")}
+                  </span>
+                )}
               </div>
               <p className="text-xs text-text-muted">
                 {formatRelativeTime(timestamp)}

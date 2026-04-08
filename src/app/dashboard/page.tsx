@@ -16,7 +16,7 @@ import { useSignalTracker } from "@/hooks/useSignalTracker";
 import { useLivePrice } from "@/hooks/useLivePrice";
 import {
   TrendingUp, Settings, Newspaper, CalendarDays, History,
-  BarChart3, Trophy, Target, Percent, Trash2, ChevronLeft, ChevronRight, Loader2, Terminal
+  BarChart3, Trophy, Target, Percent, Trash2, ChevronLeft, ChevronRight, Loader2, Terminal, Activity
 } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import { LineStyle } from "lightweight-charts";
@@ -25,6 +25,7 @@ import SignalHistory from "@/components/signals/SignalHistory";
 import NewsSentiment from "@/components/data/NewsSentiment";
 import EconomicCalendar from "@/components/data/EconomicCalendar";
 import SignOutButton from "@/components/auth/SignOutButton";
+import MarketStatePanel from "@/components/signals/MarketStatePanel";
 
 const TradingViewChart = dynamic(
   () => import("@/components/chart/TradingViewChart"),
@@ -72,7 +73,7 @@ export default function DashboardPage() {
   useSocket();
   useSignalPersistence();
   useSignalTracker();
-  const { activeSignal, signalHistory, isConnected, clearActiveSignal, targetSymbol, setTargetSymbol } = useMidasStore();
+  const { activeSignal, latestBatch, signalHistory, isConnected, clearActiveSignal, targetSymbol, setTargetSymbol } = useMidasStore();
   
   // Track when signals arrive (automatic analysis indicator)
   useEffect(() => {
@@ -94,7 +95,15 @@ export default function DashboardPage() {
   }, [targetSymbol]);
   const { config } = useConfig();
   const { stats: perf, resetting, resetPerformance } = usePerformance();
-  const { data: livePrice } = useLivePrice();
+  const {
+    data: livePrice,
+    error: livePriceError,
+    isStale,
+    ageMs,
+    isSymbolMatch,
+    currentSymbol,
+    activeSymbol,
+  } = useLivePrice();
   
   // Countdown timer for next analysis
   useEffect(() => {
@@ -114,6 +123,8 @@ export default function DashboardPage() {
     clearActiveSignal();
     // Clear history that doesn't match the new style
     useMidasStore.setState((s) => ({
+      latestBatch: null,
+      activeSignal: null,
       signalHistory: s.signalHistory.filter(
         sig => sig.trading_style?.toLowerCase() === style.toLowerCase()
       ),
@@ -171,6 +182,24 @@ export default function DashboardPage() {
     // NEVER fall back to a mismatched signal — return null instead
     return styleMatch ?? null;
   }, [activeSignal, displayHistory, tradingStyle]);
+
+  const displayBackups = useMemo(() => {
+    if (
+      latestBatch &&
+      latestBatch.symbol.toUpperCase() === targetSymbol.toUpperCase() &&
+      latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase()
+    ) {
+      return latestBatch.backups ?? [];
+    }
+
+    if (!displaySignal?.analysis_batch_id) return [];
+    return displayHistory.filter((signal) =>
+      signal.analysis_batch_id === displaySignal.analysis_batch_id &&
+      !signal.is_primary &&
+      signal.trading_style?.toLowerCase() === tradingStyle.toLowerCase() &&
+      (signal.symbol || targetSymbol).toUpperCase() === targetSymbol.toUpperCase()
+    ).slice(0, 2);
+  }, [latestBatch, targetSymbol, tradingStyle, displaySignal, displayHistory]);
 
   // No manual generation needed - system is fully automatic via WebSocket
 
@@ -252,12 +281,33 @@ export default function DashboardPage() {
   const price = livePrice?.price ?? 0;
   const change = livePrice?.change ?? 0;
   const changePct = livePrice?.changePercent ?? 0;
+  const spread = livePrice?.spread ?? 0;
+  const lastTickLabel = useMemo(() => {
+    if (ageMs == null) return "No tick yet";
+    if (ageMs < 1000) return "Updated just now";
+    if (ageMs < 60_000) return `Updated ${Math.floor(ageMs / 1000)}s ago`;
+    return `Updated ${Math.floor(ageMs / 60_000)}m ago`;
+  }, [ageMs]);
+  const liveStatusLabel = useMemo(() => {
+    if (!isConnected) return "MT5 offline";
+    if (!isSymbolMatch) return `Symbol mismatch: MT5 ${currentSymbol}, dashboard ${activeSymbol}`;
+    if (isStale) return "Live feed stale";
+    if (price > 0) return "Live ticks streaming";
+    return "Waiting for live tick";
+  }, [isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
+  const noSetupMessage = useMemo(() => {
+    if (!isConnected) return "MT5 is offline, so there is no live market feed yet.";
+    if (!isSymbolMatch) return `MT5 is streaming ${currentSymbol} while the dashboard is set to ${activeSymbol}.`;
+    if (isStale) return "The last MT5 tick is stale, so the feed needs to refresh before trusting the board.";
+    if (price > 0) return "Live ticks are moving, but the engine does not see a qualified setup at this price.";
+    return `Engine is listening for ${activeSymbol} ticks and waiting for the first valid price update.`;
+  }, [isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
 
   return (
     <div className="flex flex-col w-screen h-[100dvh] overflow-hidden bg-[#090b0f] text-text-primary antialiased">
       
       {/* ── TOP BAR (FLEX-NONE) ── */}
-      <header className="flex-none h-12 z-30 flex flex-col md:flex-row md:items-center justify-between px-3 md:px-4 bg-[#0f1219] border-b border-white/5">
+      <header className="flex-none min-h-[56px] py-2 z-30 flex flex-col md:flex-row md:items-center justify-between px-3 md:px-4 bg-[#0f1219] border-b border-white/5">
         {/* Left section: Logo & Symbol selector */}
         <div className="flex flex-row items-center justify-between w-full md:w-auto h-full">
           <div className="flex items-center gap-3 md:gap-4">
@@ -274,7 +324,7 @@ export default function DashboardPage() {
               <select
                 value={targetSymbol}
                 onChange={(e) => setTargetSymbol(e.target.value)}
-                className="bg-[#1a202c] border border-white/10 rounded px-2 py-1 text-xs font-medium text-white/80 outline-none cursor-pointer focus:border-gold/50 transition-colors uppercase tracking-wide"
+                className="bg-[#1a202c] border border-white/20 rounded-md px-2.5 py-1 text-xs font-semibold text-white outline-none cursor-pointer focus:border-gold/50 transition-colors uppercase tracking-wide hover:bg-[#252b3b]"
               >
                 <option value="XAUUSD">XAU/USD</option>
                 <option value="XAGUSD">XAG/USD</option>
@@ -284,7 +334,7 @@ export default function DashboardPage() {
               </select>
 
               {price > 0 && (
-                <div className="flex items-center gap-2 ml-1">
+                <div className="flex md:hidden items-center gap-2 ml-1">
                   <span className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-white">
                     {formatPrice(price)}
                   </span>
@@ -294,6 +344,39 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="hidden md:flex min-w-[280px] flex-col rounded-lg border border-white/5 bg-black/40 px-3 py-1.5 shadow-inner">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-bold font-(family-name:--font-jetbrains-mono) text-white">
+                  {price > 0 ? formatPrice(price) : "--.--"}
+                </span>
+                <span className={`rounded-sm px-1.5 py-0.5 text-[10px] font-bold font-(family-name:--font-jetbrains-mono) ${change >= 0 ? "bg-bullish/10 text-bullish border border-bullish/20" : "bg-bearish/10 text-bearish border border-bearish/20"}`}>
+                  {change >= 0 ? "+" : "-"}{Math.abs(change).toFixed(2)} ({changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%)
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${!isConnected ? "bg-bearish" : !isSymbolMatch || isStale ? "bg-warning" : "bg-bullish animate-pulse"}`} />
+                <span className="text-[9px] text-white/40 truncate">
+                  {livePriceError || liveStatusLabel}
+                </span>
+              </div>
+            </div>
+            
+            <div className="mt-1 flex items-center justify-between">
+              <div className="flex items-center gap-3 text-[10px] font-(family-name:--font-jetbrains-mono) text-white/50">
+                <span className="flex items-center gap-1"><span className="text-text-muted">BID</span> {price > 0 ? formatPrice(livePrice?.bid ?? 0) : "--.--"}</span>
+                <span className="flex items-center gap-1"><span className="text-text-muted">ASK</span> {price > 0 ? formatPrice(livePrice?.ask ?? 0) : "--.--"}</span>
+                <span className="flex items-center gap-1"><span className="text-text-muted">SPR</span> {price > 0 ? spread.toFixed(2) : "--"}</span>
+              </div>
+            </div>
+            
+            {!isSymbolMatch && isConnected && (
+              <div className="mt-1 text-[9px] text-warning/80 truncate">
+                MT5 Symbol: {currentSymbol}
+              </div>
+            )}
           </div>
 
           {/* Mobile Right Actions */}
@@ -365,6 +448,19 @@ export default function DashboardPage() {
 
       {/* Mobile Controls Row (Only visible on small screens) */}
       <div className="flex md:hidden flex-none w-full bg-[#0f1219] px-2 py-1.5 border-b border-white/5 overflow-x-auto hide-scrollbar gap-2">
+        <div className="shrink-0 rounded border border-white/10 bg-black/20 px-2 py-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold font-(family-name:--font-jetbrains-mono) text-white">
+              {price > 0 ? formatPrice(price) : "--.--"}
+            </span>
+            <span className={`rounded px-1 py-0.5 text-[8px] font-bold font-(family-name:--font-jetbrains-mono) ${change >= 0 ? "bg-bullish/10 text-bullish" : "bg-bearish/10 text-bearish"}`}>
+              {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
+            </span>
+          </div>
+          <div className="mt-0.5 text-[8px] font-(family-name:--font-jetbrains-mono) text-white/35">
+            BID {price > 0 ? formatPrice(livePrice?.bid ?? 0) : "--.--"} · ASK {price > 0 ? formatPrice(livePrice?.ask ?? 0) : "--.--"} · {livePriceError || liveStatusLabel}
+          </div>
+        </div>
         <div className="flex items-center bg-[#090b0f] p-1 rounded border border-white/5 shrink-0">
           {(["M1","M3","M5","M15","H1","H2","H4"] as Timeframe[]).map(tf => (
             <button key={tf} onClick={() => setTimeframe(tf)}
@@ -435,19 +531,88 @@ export default function DashboardPage() {
                     Last execution: {lastAnalysis.toLocaleTimeString()}
                   </div>
                 )}
+                <div className="mt-3 rounded-md border border-white/5 bg-black/20 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Activity className={`h-3.5 w-3.5 ${!isConnected ? "text-bearish" : !isSymbolMatch || isStale ? "text-warning" : "text-bullish"}`} />
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-white/35">{targetSymbol} Live Price</p>
+                    </div>
+                    <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30">{lastTickLabel}</span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {[
+                      { label: "Bid", value: price > 0 ? formatPrice(livePrice?.bid ?? 0) : "--.--", tone: "text-white" },
+                      { label: "Ask", value: price > 0 ? formatPrice(livePrice?.ask ?? 0) : "--.--", tone: "text-white/80" },
+                      { label: "Spread", value: price > 0 ? spread.toFixed(2) : "--", tone: spread <= 0.5 ? "text-bullish" : spread <= 1 ? "text-warning" : "text-bearish" },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded bg-white/5 p-2">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-white/25">{item.label}</p>
+                        <p className={`mt-1 text-xs font-bold font-(family-name:--font-jetbrains-mono) ${item.tone}`}>{item.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className={`mt-2 text-[10px] leading-relaxed ${!isConnected ? "text-bearish/80" : !isSymbolMatch || isStale ? "text-warning/80" : "text-white/45"}`}>
+                    {livePriceError || liveStatusLabel}
+                  </p>
+                </div>
                 {!config.apiKey && <p className="text-[10px] font-semibold text-warning mt-2 bg-warning/10 p-2 rounded border border-warning/20">No API key found. System requires LLM key in <Link href="/config" className="underline hover:text-white">Settings</Link>.</p>}
+                {latestBatch && latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase() && (
+                  <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+                    {latestBatch.regime_summary}
+                  </p>
+                )}
               </div>
+
+              {/* Section: Market State Engine */}
+              <MarketStatePanel />
 
               {/* Section: Active Signal */}
               <div>
                 <h2 className="text-[9px] font-bold text-white/40 uppercase tracking-widest pl-1 mb-2 block">Actionable Intelligence</h2>
                 {displaySignal ? (
-                  <SignalCard signal={displaySignal} onExecute={handleExecuteSignal} />
+                  <>
+                    <SignalCard signal={displaySignal} onExecute={handleExecuteSignal} />
+                    {displayBackups.length > 0 && (
+                      <div className="mt-3 rounded-lg border border-white/5 bg-[#131722] p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-white/30">Backup Setups</p>
+                          <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/20">
+                            {latestBatch?.market_regime || displaySignal.market_regime || "regime"}
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          {displayBackups.map((signal, index) => (
+                            <div
+                              key={signal.id || signal.signal_id || `${signal.analysis_batch_id}-${signal.rank ?? index}`}
+                              className="rounded-md border border-white/5 bg-black/20 p-2"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-[10px] font-bold ${signal.direction === "BUY" ? "text-bullish" : "text-bearish"}`}>
+                                    {signal.direction}
+                                  </span>
+                                  <span className="text-[9px] uppercase tracking-wider text-white/30">
+                                    {(signal.setup_type || "backup").replaceAll("_", " ")}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] font-(family-name:--font-jetbrains-mono) text-gold/80">
+                                  {Math.round(signal.score ?? signal.confidence ?? 0)}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-[10px] text-white/55">
+                                Entry {signal.entry_price} · SL {signal.stop_loss} · TP1 {signal.take_profit_1}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="bg-[#131722] rounded-lg border border-white/5 p-6 flex flex-col items-center justify-center text-center">
                     <BarChart3 className="h-6 w-6 text-white/10 mb-3" />
                     <p className="text-[11px] font-medium text-white/40 uppercase tracking-wider">No Valid Setup</p>
-                    <p className="text-[10px] text-white/20 mt-1 max-w-[200px]">Engine is crunching {timeframe} candles. Awaiting high probability configuration.</p>
+                    <p className="text-[10px] text-white/20 mt-1 max-w-[220px]">{noSetupMessage}</p>
                   </div>
                 )}
               </div>
@@ -547,8 +712,8 @@ export default function DashboardPage() {
             </div>
             
             <div className="flex-1 overflow-y-auto p-2 font-(family-name:--font-jetbrains-mono) text-[10px] space-y-1 hide-scrollbar">
-              {displayHistory.slice(0, 15).map((sig) => (
-                <div key={`${sig.id || sig.timestamp}-${sig.symbol}`} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
+              {displayHistory.slice(0, 15).map((sig, idx) => (
+                <div key={`${sig.id || sig.timestamp || idx}-${sig.symbol}-${idx}`} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
                   <span className="text-white/20 whitespace-nowrap hidden sm:inline">
                     {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : "--:--:--"}
                   </span>

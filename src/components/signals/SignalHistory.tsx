@@ -36,7 +36,7 @@ export default function SignalHistory({ signals }: SignalHistoryProps) {
 
         return (
           <div
-            key={`${signal.id || i}-${signal.timestamp}`}
+            key={`${signal.id || signal.timestamp || i}-${i}`}
             className="flex items-center justify-between rounded-xl bg-surface/50 hover:bg-surface px-4 py-3 transition-colors"
           >
             {/* Direction + Price */}

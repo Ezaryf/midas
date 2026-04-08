@@ -238,6 +238,9 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
     };
     window.addEventListener("resize", handleResize);
 
+    // Initial resize trigger to prevent black screen on mount
+    setTimeout(handleResize, 100);
+
     // Also observe container size changes (e.g. when side panels open/close)
     const ro = new ResizeObserver(() => {
       if (containerRef.current) chart.applyOptions({ 
@@ -255,7 +258,7 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
       ema9Ref.current = ema21Ref.current = ema50Ref.current = rsiRef.current = null;
       fittedRef.current = false;
     };
-  }, [height, autoScale]); // Added autoScale so it doesn't revert to stale value on container resize
+  }, [height]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Apply Option Toggles ───────────────────────────────────────────────────
   useEffect(() => {
@@ -303,10 +306,13 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
     // RSI
     rsiRef.current?.setData(calcRSI(data, 14));
 
-    // Fit only on first load
-    if (!fittedRef.current) {
-      chartRef.current?.timeScale().fitContent();
-      fittedRef.current = true;
+    // Fit and focus on load
+    if (data.length > 0 && !fittedRef.current) {
+      setTimeout(() => {
+        chartRef.current?.timeScale().fitContent();
+        chartRef.current?.timeScale().scrollToRealTime();
+        fittedRef.current = true;
+      }, 50);
     }
   }, [data]);
 
@@ -336,27 +342,27 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
     <div className="relative w-full h-full select-none">
       {/* EMA legend */}
       {showEMA && (
-        <div className="absolute top-2 left-2 z-10 flex items-center gap-3 pointer-events-none">
+        <div className="absolute top-3 left-4 z-10 flex items-center gap-3 p-1.5 rounded-lg bg-[#0f1219]/80 backdrop-blur-md border border-white/5 shadow-sm pointer-events-none">
           {[
             { label: "EMA 9",  color: "#F59E0B" },
             { label: "EMA 21", color: "#3B82F6" },
             { label: "EMA 50", color: "#A855F7" },
           ].map(({ label, color }) => (
-            <div key={label} className="flex items-center gap-1">
-              <span className="h-px w-4 inline-block" style={{ backgroundColor: color }} />
-              <span className="text-[9px] font-medium" style={{ color }}>{label}</span>
+            <div key={label} className="flex items-center gap-1.5">
+              <span className="h-0.5 w-3 rounded-full" style={{ backgroundColor: color }} />
+              <span className="text-[10px] font-bold tracking-wide" style={{ color }}>{label}</span>
             </div>
           ))}
           {showRSI && (
-            <div className="flex items-center gap-1 ml-2">
-              <span className="text-[9px] text-text-muted">RSI 14</span>
+            <div className="flex items-center gap-1.5 ml-1 pl-3 border-l border-white/10">
+              <span className="text-[10px] font-bold text-white/50 tracking-wide">RSI 14</span>
             </div>
           )}
         </div>
       )}
 
       {/* Chart Controls */}
-      <div className="absolute top-2 right-12 z-20 flex items-center gap-1.5 p-1 glass rounded-md border border-border/50">
+      <div className="absolute top-3 right-[70px] z-20 flex items-center gap-1 p-1 bg-[#0f1219]/80 backdrop-blur-md rounded-lg border border-white/5 shadow-sm">
         <button
           onClick={() => setAutoScale(!autoScale)}
           className={`px-2 py-1 flex items-center gap-1 rounded text-[10px] font-medium transition-colors ${autoScale ? "bg-midas-gold/20 text-midas-gold" : "hover:bg-surface-elevated text-text-muted"}`}
