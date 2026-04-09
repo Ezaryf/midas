@@ -1,125 +1,40 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { createClient } from "@/utils/supabase/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TradeSignal } from "@/lib/types";
-
-const getUserWithRetry = async (supabase: ReturnType<typeof createClient>, retries = 3) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      return user;
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (errorMsg.includes("lock") && i < retries - 1) {
-        await new Promise(r => setTimeout(r, (i + 1) * 500));
-        continue;
-      }
-      throw err;
-    }
-  }
-  return null;
-};
+import { fetchWithSchema } from "@/lib/http";
+import { signalHistoryResponseSchema } from "@/lib/schemas/api";
 
 export function useSignalHistory() {
-  const [signals, setSignals] = useState<TradeSignal[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [clearing, setClearing] = useState(false);
-  const supabase = createClient();
+  const queryClient = useQueryClient();
 
-  useEffect(() => {
-    const load = async () => {
-      const user = await getUserWithRetry(supabase);
-      if (!user) { setLoading(false); return; }
+  const query = useQuery({
+    queryKey: ["signal-history"],
+    queryFn: async () => {
+      const data = await fetchWithSchema("/api/signals/history", signalHistoryResponseSchema);
+      return data.signals as TradeSignal[];
+    },
+    retry: 0,
+    // Poll every 30s to pick up new signals saved by the Python backend
+    refetchInterval: 30_000,
+  });
 
-      const { data, error } = await supabase
-        .from("signals")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(50);
-
-      if (!error && data) {
-        setSignals(data.map(r => ({
-          id:            r.id,
-          signal_id:     r.id,
-          symbol:        r.symbol,
-          analysis_batch_id: r.analysis_batch_id,
-          timestamp:     r.created_at,
-          direction:     r.direction,
-          entry_price:   r.entry_price,
-          stop_loss:     r.stop_loss,
-          take_profit_1: r.take_profit_1,
-          take_profit_2: r.take_profit_2,
-          confidence:    r.confidence,
-          reasoning:     r.reasoning,
-          trading_style: r.trading_style,
-          setup_type:    r.setup_type,
-          market_regime: r.market_regime,
-          score:         r.score,
-          rank:          r.rank,
-          is_primary:    r.is_primary,
-          entry_window_low: r.entry_window_low,
-          entry_window_high: r.entry_window_high,
-          context_tags:  r.context_tags,
-          source:        r.source,
-          status:        r.status,
-          outcome:       r.outcome,
-        })));
+  const clearMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/signals/history", { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error("Failed to clear history");
       }
-      setLoading(false);
-    };
+    },
+    onSuccess: () => {
+      queryClient.setQueryData(["signal-history"], []);
+    },
+  });
 
-    load();
-
-    const channel = supabase
-      .channel("signals-changes")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "signals" },
-        (payload) => {
-          const r = payload.new;
-          setSignals(prev => [{
-            id:            r.id,
-            signal_id:     r.id,
-            symbol:        r.symbol,
-            analysis_batch_id: r.analysis_batch_id,
-            timestamp:     r.created_at,
-            direction:     r.direction,
-            entry_price:   r.entry_price,
-            stop_loss:     r.stop_loss,
-            take_profit_1: r.take_profit_1,
-            take_profit_2: r.take_profit_2,
-            confidence:    r.confidence,
-            reasoning:     r.reasoning,
-            trading_style: r.trading_style,
-            setup_type:    r.setup_type,
-            market_regime: r.market_regime,
-            score:         r.score,
-            rank:          r.rank,
-            is_primary:    r.is_primary,
-            entry_window_low: r.entry_window_low,
-            entry_window_high: r.entry_window_high,
-            context_tags:  r.context_tags,
-            source:        r.source,
-            status:        r.status,
-            outcome:       r.outcome,
-          }, ...prev].slice(0, 50));
-        })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const clearHistory = async () => {
-    setClearing(true);
-    try {
-      const user = await getUserWithRetry(supabase);
-      if (!user) return;
-      await supabase.from("signals").delete().eq("user_id", user.id);
-      setSignals([]);
-    } finally {
-      setClearing(false);
-    }
+  return {
+    signals: query.data ?? [],
+    loading: query.isLoading,
+    clearing: clearMutation.isPending,
+    clearHistory: () => clearMutation.mutateAsync(),
   };
-
-  return { signals, loading, clearing, clearHistory };
 }

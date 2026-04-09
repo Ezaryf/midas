@@ -35,6 +35,110 @@ export interface TradeSignal {
     confidence: number;
     description: string;
   }>;
+  evidence?: Record<string, number>;
+  no_trade_reasons?: Array<{
+    code: string;
+    message: string;
+    blocking: boolean;
+  }>;
+}
+
+export interface PatternInsight {
+  type: string;
+  family: "chart" | "candlestick";
+  timeframe: string;
+  direction: "BUY" | "SELL";
+  confidence: number;
+  description: string;
+  relation: "support" | "conflict" | "neutral";
+  entry_price?: number | null;
+}
+
+export interface CandidateInsight {
+  setup_type: string;
+  direction: "BUY" | "SELL" | "HOLD";
+  status: "selected" | "backup" | "rejected";
+  entry_price: number;
+  stop_loss: number;
+  take_profit_1: number;
+  take_profit_2: number;
+  score: number;
+  rr: number;
+  evidence: Record<string, number>;
+  blocker_reasons: Array<{
+    code: string;
+    message: string;
+    blocking: boolean;
+  }>;
+  context_tags: string[];
+  linked_patterns: PatternInsight[];
+  reasoning: string;
+}
+
+export interface DecisionGateStatus {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  blocking: boolean;
+}
+
+export interface MarketPhaseSummary {
+  key: string;
+  label: string;
+  description: string;
+}
+
+export interface SourceQuality {
+  symbol_match: boolean;
+  tick_fresh: boolean;
+  source: string;
+  is_live: boolean;
+  confidence_cap: number;
+  notes: string[];
+}
+
+export interface TimeframeDatasetSummary {
+  timeframe: string;
+  source: string;
+  is_live: boolean;
+  candles: number;
+  source_quality: SourceQuality;
+}
+
+export interface TickSnapshot {
+  symbol?: string | null;
+  bid?: number | null;
+  ask?: number | null;
+  spread?: number | null;
+  time?: string | null;
+  received_at?: string | null;
+}
+
+export interface AnalysisContextSummary {
+  symbol: string;
+  trading_style: "Scalper" | "Intraday" | "Swing";
+  current_price: number;
+  tick?: TickSnapshot | null;
+  datasets: TimeframeDatasetSummary[];
+  session_active: boolean;
+  news_blocked: boolean;
+  risk_blocked: boolean;
+  constraints: {
+    auto_execute_confidence: number;
+    rr_min: number;
+    rr_target: number;
+    max_backups: number;
+  };
+  generated_at: string;
+}
+
+export interface EngineInsight {
+  phase: MarketPhaseSummary;
+  summary: string;
+  candidates: CandidateInsight[];
+  patterns: PatternInsight[];
+  decision_gates: DecisionGateStatus[];
 }
 
 export interface AnalysisBatch {
@@ -46,6 +150,8 @@ export interface AnalysisBatch {
   regime_summary: string;
   source: string;
   source_is_live: boolean;
+  context_summary?: AnalysisContextSummary;
+  engine_insight?: EngineInsight | null;
   primary: TradeSignal;
   backups: TradeSignal[];
 }
@@ -81,9 +187,13 @@ export interface MarketState {
   swings: Array<{ type: "high" | "low"; index: number; price: number }>;
   regime: string;
   regime_confidence: number;
+  phase_key?: string | null;
+  phase_label?: string | null;
+  phase_description?: string | null;
   notes: string[];
   symbol: string;
   trading_style: string;
+  context_summary?: AnalysisContextSummary;
 }
 
 /** Adapts the mock-data camelCase Signal to the canonical TradeSignal */

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpRight, ArrowDownRight, Clock, DollarSign } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, Clock } from "lucide-react";
 import { formatPrice, formatRelativeTime } from "@/lib/utils";
 import type { Position } from "@/hooks/usePositions";
 

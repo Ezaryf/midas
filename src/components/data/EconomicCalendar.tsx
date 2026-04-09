@@ -1,7 +1,7 @@
 "use client";
 
 import type { CalendarEvent } from "@/lib/mock-data";
-import { Clock, AlertTriangle, Minus } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
 interface EconomicCalendarProps {
   events: CalendarEvent[];

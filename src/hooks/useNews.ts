@@ -1,34 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { NewsItem } from "@/lib/mock-data";
+import { fetchWithSchema } from "@/lib/http";
+import { newsResponseSchema } from "@/lib/schemas/api";
 
 export function useNews() {
-  const [items, setItems] = useState<NewsItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const query = useQuery({
+    queryKey: ["news"],
+    queryFn: async () => {
+      const data = await fetchWithSchema("/api/news", newsResponseSchema);
+      return data.items as NewsItem[];
+    },
+    refetchInterval: 300_000,
+  });
 
-  useEffect(() => {
-    fetch("/api/news")
-      .then(r => r.json())
-      .then(data => {
-        const mapped: NewsItem[] = (data.items ?? []).map((n: any) => ({
-          ...n,
-          publishedAt: new Date(n.publishedAt),
-        }));
-        setItems(mapped);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-
-    // Refresh every 5 minutes
-    const id = setInterval(() => {
-      fetch("/api/news")
-        .then(r => r.json())
-        .then(data => setItems((data.items ?? []).map((n: any) => ({ ...n, publishedAt: new Date(n.publishedAt) }))));
-    }, 300_000);
-
-    return () => clearInterval(id);
-  }, []);
-
-  return { items, loading };
+  return { items: query.data ?? [], loading: query.isLoading };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMidasStore } from "@/store/useMidasStore";
 import { useShallow } from 'zustand/react/shallow';
 
@@ -26,7 +26,7 @@ export function useLivePrice() {
     calibrationFactor: s.calibrationFactor
   })));
   
-  const tickRef = useRef<"up" | "down" | null>(null);
+  const [tick, setTick] = useState<"up" | "down" | null>(null);
 
   // Track session open price (first price of the session)
   const sessionDataRef = useRef<{ open: number; high: number; low: number } | null>(null);
@@ -34,6 +34,13 @@ export function useLivePrice() {
   
   const prevPriceRef = useRef<number | null>(null);
   const tickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTickTimeout = useCallback(() => {
+    if (tickTimeoutRef.current) {
+      clearTimeout(tickTimeoutRef.current);
+      tickTimeoutRef.current = null;
+    }
+  }, []);
 
   // Derive symbols to check for mismatches
   const normalizeSymbol = (s: string) => 
@@ -70,10 +77,18 @@ export function useLivePrice() {
   }, []);
 
   useEffect(() => {
+    clearTickTimeout();
     sessionDataRef.current = null;
     prevPriceRef.current = null;
-    tickRef.current = null;
-  }, [activeSymbol]);
+    setTick(null);
+  }, [activeSymbol, clearTickTimeout]);
+
+  useEffect(() => {
+    if (!isConnected || !isSymbolMatch || bid <= 1) {
+      clearTickTimeout();
+      setTick(null);
+    }
+  }, [bid, isConnected, isSymbolMatch, clearTickTimeout]);
 
   useEffect(() => {
     if (!isSymbolMatch || bid <= 1) return;
@@ -89,16 +104,19 @@ export function useLivePrice() {
     }
 
     if (prevPriceRef.current !== null && prevPriceRef.current !== bid) {
-      if (tickTimeoutRef.current) clearTimeout(tickTimeoutRef.current);
-      tickRef.current = bid >= prevPriceRef.current ? "up" : "down";
-      tickTimeoutRef.current = setTimeout(() => { tickRef.current = null; }, 300);
+      clearTickTimeout();
+      setTick(bid >= prevPriceRef.current ? "up" : "down");
+      tickTimeoutRef.current = setTimeout(() => {
+        setTick(null);
+        tickTimeoutRef.current = null;
+      }, 300);
     }
     prevPriceRef.current = bid;
 
     return () => {
-      if (tickTimeoutRef.current) clearTimeout(tickTimeoutRef.current);
+      clearTickTimeout();
     };
-  }, [bid, isSymbolMatch]);
+  }, [bid, isSymbolMatch, clearTickTimeout]);
 
   // Derive all data synchronously
   const result = useMemo(() => {
@@ -128,7 +146,7 @@ export function useLivePrice() {
         isSymbolMatch,
         currentSymbol,
         activeSymbol,
-        tick: tickRef.current,
+        tick,
       };
     }
 
@@ -154,9 +172,9 @@ export function useLivePrice() {
       isSymbolMatch,
       currentSymbol,
       activeSymbol,
-      tick: tickRef.current,
+      tick,
     };
-  }, [bid, ask, spread, time, isConnected, isSymbolMatch, activeSymbol, sessionDataRef, currentSymbol, nowMs]);
+  }, [bid, ask, spread, time, isConnected, isSymbolMatch, activeSymbol, currentSymbol, nowMs, tick]);
 
   return result;
 }

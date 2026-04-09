@@ -11,6 +11,17 @@ const FEEDS = [
   { url: "https://www.fxstreet.com/rss/news",              source: "FXStreet" },
 ];
 
+interface NewsItem {
+  id: string;
+  title: string;
+  source: string;
+  sentiment: "bullish" | "bearish" | "neutral";
+  impact: "high" | "medium" | "low";
+  summary: string;
+  url: string;
+  publishedAt: string;
+}
+
 function sentiment(text: string) {
   const t = text.toLowerCase();
   const b = BULLISH.filter(w => t.includes(w)).length;
@@ -30,7 +41,7 @@ function isRelevant(title: string, desc: string) {
 }
 
 async function parseFeed(feed: { url: string; source: string }) {
-  const items: object[] = [];
+  const items: NewsItem[] = [];
   try {
     const res = await fetch(feed.url, { headers: { "User-Agent": "Mozilla/5.0" }, next: { revalidate: 120 } });
     if (!res.ok) return items;
@@ -55,6 +66,6 @@ async function parseFeed(feed: { url: string; source: string }) {
 export async function GET() {
   const results = await Promise.allSettled(FEEDS.map(parseFeed));
   const items = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
-  items.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+  items.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   return NextResponse.json({ items: items.slice(0, 20) });
 }

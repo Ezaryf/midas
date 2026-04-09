@@ -9,11 +9,11 @@ import { useLiveCandles, type Timeframe } from "@/hooks/useLiveCandles";
 import { useCalendar } from "@/hooks/useCalendar";
 import { useNews } from "@/hooks/useNews";
 import { useConfig } from "@/hooks/useConfig";
-import { useSignalPersistence } from "@/hooks/useSignalPersistence";
 import { useSignalHistory } from "@/hooks/useSignalHistory";
 import { usePerformance } from "@/hooks/usePerformance";
 import { useSignalTracker } from "@/hooks/useSignalTracker";
 import { useLivePrice } from "@/hooks/useLivePrice";
+import type { PerformanceStats } from "@/hooks/usePerformance";
 import {
   TrendingUp, Settings, Newspaper, CalendarDays, History,
   BarChart3, Trophy, Target, Percent, Trash2, ChevronLeft, ChevronRight, Loader2, Terminal, Activity
@@ -24,7 +24,8 @@ import SignalCard from "@/components/signals/SignalCard";
 import SignalHistory from "@/components/signals/SignalHistory";
 import NewsSentiment from "@/components/data/NewsSentiment";
 import EconomicCalendar from "@/components/data/EconomicCalendar";
-import SignOutButton from "@/components/auth/SignOutButton";
+
+import EngineInsightPanel from "@/components/signals/EngineInsightPanel";
 import MarketStatePanel from "@/components/signals/MarketStatePanel";
 
 const TradingViewChart = dynamic(
@@ -32,17 +33,153 @@ const TradingViewChart = dynamic(
   { ssr: false, loading: () => <div className="w-full h-full bg-transparent" /> }
 );
 
-type RightTab = "news" | "calendar" | "history";
+type RightTab = "engine" | "news" | "calendar" | "history";
 type BottomTab = "terminal" | "market-state" | "performance";
 
 type TradingStyle = "Scalper" | "Intraday" | "Swing";
+
+type AnalysisEngineCardProps = {
+  tradingStyle: TradingStyle;
+  isConnected: boolean;
+  nextAnalysis: number;
+  lastAnalysis: Date | null;
+  targetSymbol: string;
+  price: number;
+  livePrice: { bid: number; ask: number } | null;
+  spread: number;
+  lastTickLabel: string;
+  livePriceError: string | null;
+  liveStatusLabel: string;
+  isSymbolMatch: boolean;
+  isStale: boolean;
+  configApiKey?: string;
+  latestRegimeSummary?: string | null;
+};
+
+function AnalysisEngineCard({
+  tradingStyle,
+  isConnected,
+  nextAnalysis,
+  lastAnalysis,
+  targetSymbol,
+  price,
+  livePrice,
+  spread,
+  lastTickLabel,
+  livePriceError,
+  liveStatusLabel,
+  isSymbolMatch,
+  isStale,
+  configApiKey,
+  latestRegimeSummary,
+}: AnalysisEngineCardProps) {
+  return (
+    <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-[9px] font-bold text-white/40 uppercase tracking-widest">Analysis Engine</h2>
+        <span className="text-[9px] font-bold text-gold bg-gold/10 px-1.5 py-0.5 rounded border border-gold/20 uppercase tracking-wider">{tradingStyle}</span>
+      </div>
+      <div className="flex items-center justify-between bg-black/20 p-2 rounded">
+        {isConnected ? (
+          <div className="flex items-center gap-2">
+            <div className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse shadow-[0_0_5px_rgba(34,197,94,0.8)]" />
+            <span className="text-[10px] font-medium text-bullish tracking-wide uppercase">Active</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <div className="h-1.5 w-1.5 rounded-full bg-bearish" />
+            <span className="text-[10px] font-medium text-bearish tracking-wide uppercase">Paused / Offline</span>
+          </div>
+        )}
+        {isConnected && (
+          <div className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/40">
+            Next TCK in <span className="text-white font-bold">{nextAnalysis}s</span>
+          </div>
+        )}
+      </div>
+      {lastAnalysis && (
+        <div className="mt-2 text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30 text-right">
+          Last execution: {lastAnalysis.toLocaleTimeString()}
+        </div>
+      )}
+      <div className="mt-3 rounded-md border border-white/5 bg-black/20 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Activity className={`h-3.5 w-3.5 ${!isConnected ? "text-bearish" : !isSymbolMatch || isStale ? "text-warning" : "text-bullish"}`} />
+            <p className="text-[9px] font-bold uppercase tracking-widest text-white/35">{targetSymbol} Live Price</p>
+          </div>
+          <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30">{lastTickLabel}</span>
+        </div>
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {[
+            { label: "Bid", value: price > 0 ? formatPrice(livePrice?.bid ?? 0) : "--.--", tone: "text-white" },
+            { label: "Ask", value: price > 0 ? formatPrice(livePrice?.ask ?? 0) : "--.--", tone: "text-white/80" },
+            { label: "Spread", value: price > 0 ? spread.toFixed(2) : "--", tone: spread <= 0.5 ? "text-bullish" : spread <= 1 ? "text-warning" : "text-bearish" },
+          ].map((item) => (
+            <div key={item.label} className="rounded bg-white/5 p-2">
+              <p className="text-[9px] font-bold uppercase tracking-widest text-white/25">{item.label}</p>
+              <p className={`mt-1 text-xs font-bold font-(family-name:--font-jetbrains-mono) ${item.tone}`}>{item.value}</p>
+            </div>
+          ))}
+        </div>
+        <p className={`mt-2 text-[10px] leading-relaxed ${!isConnected ? "text-bearish/80" : !isSymbolMatch || isStale ? "text-warning/80" : "text-white/45"}`}>
+          {livePriceError || liveStatusLabel}
+        </p>
+      </div>
+      {!configApiKey && <p className="text-[10px] font-semibold text-warning mt-2 bg-warning/10 p-2 rounded border border-warning/20">No API key found. System requires LLM key in <Link href="/config" className="underline hover:text-white">Settings</Link>.</p>}
+      {latestRegimeSummary && (
+        <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+          {latestRegimeSummary}
+        </p>
+      )}
+    </div>
+  );
+}
+
+type PerformancePanelProps = {
+  perf: PerformanceStats;
+  resetting: boolean;
+  resetPerformance: () => Promise<void>;
+};
+
+function PerformancePanel({ perf, resetting, resetPerformance }: PerformancePanelProps) {
+  return (
+    <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
+      <div className="flex items-center justify-between mb-3 border-b border-white/5 pb-2">
+        <p className="text-[9px] font-bold text-white/30 uppercase tracking-widest">Metrics / Performance</p>
+        <button
+          onClick={resetPerformance}
+          disabled={resetting}
+          className="flex items-center gap-1 rounded bg-black/20 px-1.5 py-1 text-[9px] font-bold text-white/20 hover:text-bearish hover:bg-bearish/10 border border-transparent hover:border-bearish/20 transition-all disabled:opacity-40 uppercase tracking-wider"
+          title="Reset all performance stats"
+        >
+          {resetting ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Trash2 className="h-2.5 w-2.5" />}
+          {resetting ? "Resetting..." : "Reset"}
+        </button>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {[
+          { label: "Win Rate", value: perf.winRate + "%", color: "text-bullish" },
+          { label: "P.Factor", value: perf.profitFactor > 0 ? perf.profitFactor + "x" : "-", color: "text-gold" },
+          { label: "Today PnL", value: (perf.todayPnl >= 0 ? "+" : "") + "$" + perf.todayPnl.toFixed(0), color: perf.todayPnl >= 0 ? "text-bullish" : "text-bearish" },
+          { label: "Week PnL", value: (perf.weekPnl >= 0 ? "+" : "") + "$" + perf.weekPnl.toFixed(0), color: perf.weekPnl >= 0 ? "text-bullish" : "text-bearish" },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="bg-white/5 p-3 rounded flex flex-col justify-between min-h-20">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-white/30 mb-1">{label}</p>
+            <p className={`text-sm font-bold font-(family-name:--font-jetbrains-mono) ${color}`}>{value}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   // Persist timeframe & tradingStyle in localStorage so they survive navigation
   const [timeframe, setTimeframeRaw] = useState<Timeframe>("H2");
   const [tradingStyle, setTradingStyleRaw] = useState<TradingStyle>("Scalper");
   const [styleChanging, setStyleChanging] = useState(false);
-  const [rightTab, setRightTab]       = useState<RightTab>("news");
+  const [rightTab, setRightTab]       = useState<RightTab>("engine");
   const [bottomTab, setBottomTab]     = useState<BottomTab>("terminal");
   const [rightOpen, setRightOpen]     = useState(true);
   const [leftOpen, setLeftOpen]       = useState(true);
@@ -73,9 +210,8 @@ export default function DashboardPage() {
   }, []);
 
   useSocket();
-  useSignalPersistence();
   useSignalTracker();
-  const { activeSignal, latestBatch, signalHistory, isConnected, clearActiveSignal, targetSymbol, setTargetSymbol } = useMidasStore();
+  const { activeSignal, latestBatch, marketState, signalHistory, isConnected, clearActiveSignal, targetSymbol, setTargetSymbol } = useMidasStore();
   
   // Track when signals arrive (automatic analysis indicator)
   useEffect(() => {
@@ -169,7 +305,7 @@ export default function DashboardPage() {
   const { signals: dbHistory, loading: historyLoading, clearing, clearHistory } = useSignalHistory();
 
   const displayHistory = useMemo(() => {
-    // ALWAYS prioritize local state signals first if Supabase is a problem
+    // Prioritize local WebSocket signals first, fall back to DB history
     const base = signalHistory.length > 0 ? signalHistory : dbHistory;
     return base;
   }, [dbHistory, signalHistory]);
@@ -297,13 +433,33 @@ export default function DashboardPage() {
     if (price > 0) return "Live ticks streaming";
     return "Waiting for live tick";
   }, [isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
+  const latestMatchingBatch = useMemo(() => {
+    if (!latestBatch || !targetSymbol) return null;
+    const batchSym = latestBatch.symbol.toUpperCase().replace(/\./g, '').replace('M', '');
+    const target = targetSymbol.toUpperCase().replace(/\./g, '').replace('M', '');
+    const isLocalSymbolMatch = batchSym === target || 
+      (batchSym.includes('GOLD') && target.includes('XAU')) || 
+      (batchSym.includes('XAU') && target.includes('GOLD'));
+      
+    if (
+      isLocalSymbolMatch &&
+      latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase()
+    ) {
+      return latestBatch;
+    }
+    return null;
+  }, [latestBatch, targetSymbol, tradingStyle]);
+  const noTradeReasons = useMemo(() => {
+    return latestMatchingBatch?.primary?.no_trade_reasons ?? [];
+  }, [latestMatchingBatch]);
   const noSetupMessage = useMemo(() => {
+    if (noTradeReasons.length > 0) return noTradeReasons[0]?.message ?? "The engine rejected the current price action.";
     if (!isConnected) return "MT5 is offline, so there is no live market feed yet.";
     if (!isSymbolMatch) return `MT5 is streaming ${currentSymbol} while the dashboard is set to ${activeSymbol}.`;
     if (isStale) return "The last MT5 tick is stale, so the feed needs to refresh before trusting the board.";
     if (price > 0) return "Live ticks are moving, but the engine does not see a qualified setup at this price.";
     return `Engine is listening for ${activeSymbol} ticks and waiting for the first valid price update.`;
-  }, [isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
+  }, [noTradeReasons, isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
 
   return (
     <div className="flex flex-col w-screen h-[100dvh] overflow-hidden bg-[#090b0f] text-text-primary antialiased">
@@ -442,9 +598,7 @@ export default function DashboardPage() {
           <Link href="/config" className="flex items-center justify-center p-1.5 rounded-md border border-white/10 bg-[#1a202c] text-white/50 hover:text-white hover:bg-[#252b3b] transition-all" title="System Settings">
             <Settings className="h-4 w-4" />
           </Link>
-          <div className="pl-1">
-             <SignOutButton />
-          </div>
+
         </div>
       </header>
 
@@ -505,65 +659,27 @@ export default function DashboardPage() {
             
             <div className="flex-1 overflow-y-auto p-3 space-y-4">
               {/* Section: Status */}
-              <div className="hidden bg-[#131722] rounded-lg border border-white/5 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-[9px] font-bold text-white/40 uppercase tracking-widest">Analysis Engine</h2>
-                  <span className="text-[9px] font-bold text-gold bg-gold/10 px-1.5 py-0.5 rounded border border-gold/20 uppercase tracking-wider">{tradingStyle}</span>
-                </div>
-                <div className="flex items-center justify-between bg-black/20 p-2 rounded">
-                   {isConnected ? (
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse shadow-[0_0_5px_rgba(34,197,94,0.8)]" />
-                      <span className="text-[10px] font-medium text-bullish tracking-wide uppercase">Active</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-1.5 rounded-full bg-bearish" />
-                      <span className="text-[10px] font-medium text-bearish tracking-wide uppercase">Paused / Offline</span>
-                    </div>
-                  )}
-                  {isConnected && (
-                    <div className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/40">
-                      Next TCK in <span className="text-white font-bold">{nextAnalysis}s</span>
-                    </div>
-                  )}
-                </div>
-                {lastAnalysis && (
-                  <div className="mt-2 text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30 text-right">
-                    Last execution: {lastAnalysis.toLocaleTimeString()}
-                  </div>
-                )}
-                <div className="mt-3 rounded-md border border-white/5 bg-black/20 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Activity className={`h-3.5 w-3.5 ${!isConnected ? "text-bearish" : !isSymbolMatch || isStale ? "text-warning" : "text-bullish"}`} />
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-white/35">{targetSymbol} Live Price</p>
-                    </div>
-                    <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30">{lastTickLabel}</span>
-                  </div>
-                  <div className="mt-2 grid grid-cols-3 gap-2">
-                    {[
-                      { label: "Bid", value: price > 0 ? formatPrice(livePrice?.bid ?? 0) : "--.--", tone: "text-white" },
-                      { label: "Ask", value: price > 0 ? formatPrice(livePrice?.ask ?? 0) : "--.--", tone: "text-white/80" },
-                      { label: "Spread", value: price > 0 ? spread.toFixed(2) : "--", tone: spread <= 0.5 ? "text-bullish" : spread <= 1 ? "text-warning" : "text-bearish" },
-                    ].map((item) => (
-                      <div key={item.label} className="rounded bg-white/5 p-2">
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-white/25">{item.label}</p>
-                        <p className={`mt-1 text-xs font-bold font-(family-name:--font-jetbrains-mono) ${item.tone}`}>{item.value}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <p className={`mt-2 text-[10px] leading-relaxed ${!isConnected ? "text-bearish/80" : !isSymbolMatch || isStale ? "text-warning/80" : "text-white/45"}`}>
-                    {livePriceError || liveStatusLabel}
-                  </p>
-                </div>
-                {!config.apiKey && <p className="text-[10px] font-semibold text-warning mt-2 bg-warning/10 p-2 rounded border border-warning/20">No API key found. System requires LLM key in <Link href="/config" className="underline hover:text-white">Settings</Link>.</p>}
-                {latestBatch && latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase() && (
-                  <p className="mt-2 text-[10px] leading-relaxed text-white/35">
-                    {latestBatch.regime_summary}
-                  </p>
-                )}
-              </div>
+              <AnalysisEngineCard
+                tradingStyle={tradingStyle}
+                isConnected={isConnected}
+                nextAnalysis={nextAnalysis}
+                lastAnalysis={lastAnalysis}
+                targetSymbol={targetSymbol}
+                price={price}
+                livePrice={livePrice}
+                spread={spread}
+                lastTickLabel={lastTickLabel}
+                livePriceError={livePriceError}
+                liveStatusLabel={liveStatusLabel}
+                isSymbolMatch={isSymbolMatch}
+                isStale={isStale}
+                configApiKey={config.apiKey}
+                latestRegimeSummary={
+                  latestBatch && latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase()
+                    ? latestBatch.regime_summary
+                    : null
+                }
+              />
 
               {/* Section: Active Signal */}
               <div>
@@ -608,16 +724,42 @@ export default function DashboardPage() {
                     )}
                   </>
                 ) : (
-                  <div className="bg-[#131722] rounded-lg border border-white/5 p-6 flex flex-col items-center justify-center text-center">
-                    <BarChart3 className="h-6 w-6 text-white/10 mb-3" />
-                    <p className="text-[11px] font-medium text-white/40 uppercase tracking-wider">No Valid Setup</p>
-                    <p className="text-[10px] text-white/20 mt-1 max-w-[220px]">{noSetupMessage}</p>
+                  <div className="space-y-3">
+                    <div className="bg-[#131722] rounded-lg border border-white/5 p-6 flex flex-col items-center justify-center text-center relative overflow-hidden">
+                      <div className="absolute inset-0 bg-gold/5 blur-3xl animate-pulse" />
+                      <BarChart3 className="h-6 w-6 text-white/10 mb-3 relative z-10 animate-bounce" />
+                      <p className="text-[11px] font-medium text-white/40 uppercase tracking-wider relative z-10 flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-gold animate-pulse" /> Engine Analyzing
+                      </p>
+                      <p className="text-[10px] text-white/30 mt-1 max-w-[220px] relative z-10">{noSetupMessage}</p>
+                      {latestMatchingBatch?.regime_summary && (
+                        <p className="mt-3 max-w-[240px] text-[10px] leading-relaxed text-white/40 relative z-10">
+                          {latestMatchingBatch.regime_summary}
+                        </p>
+                      )}
+                      {noTradeReasons.length > 1 && (
+                        <div className="mt-3 w-full max-w-[260px] rounded-md border border-white/5 bg-black/20 p-3 text-left relative z-10">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-white/25">Engine Reasons</p>
+                          <div className="mt-2 space-y-1.5">
+                            {noTradeReasons.slice(0, 3).map((reason, index) => (
+                              <p key={`${reason.code}-${index}`} className="text-[10px] leading-relaxed text-white/40">
+                                {reason.blocking ? "Blocker:" : "Context:"} {reason.message}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* Expose MarketState explicitly when no setup is active so user sees live tick data flowing */}
+                    <div className="hidden md:block">
+                      <h2 className="text-[9px] font-bold text-white/40 uppercase tracking-widest pl-1 mb-2 block mt-2">Live Regime Context</h2>
+                      <MarketStatePanel />
+                    </div>
                   </div>
                 )}
               </div>
               
-              {/* Performance Mini-Dashboard */}
-              <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
+              {false && <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
                 <div className="flex items-center justify-between mb-3 border-b border-white/5 pb-2">
                   <p className="text-[9px] font-bold text-white/30 uppercase tracking-widest">Metrics / Performance</p>
                   <button
@@ -643,7 +785,7 @@ export default function DashboardPage() {
                     </div>
                   ))}
                 </div>
-              </div>
+              </div>}
             </div>
           </div>
         </aside>
@@ -675,7 +817,7 @@ export default function DashboardPage() {
           {/* Mobile Panel Toggles */}
           <div className="md:hidden absolute bottom-4 right-4 z-40 flex flex-col gap-2">
              <button onClick={() => setRightOpen(true)} className="h-10 w-10 rounded-full bg-gold/90 text-black flex items-center justify-center shadow-lg backdrop-blur">
-               <History className="h-4 w-4" />
+               <Activity className="h-4 w-4" />
              </button>
              <button onClick={() => setLeftOpen(true)} className="h-10 w-10 rounded-full bg-[#1a202c]/90 border border-white/10 text-white flex items-center justify-center shadow-lg backdrop-blur">
                <TrendingUp className="h-4 w-4" />
@@ -780,6 +922,10 @@ export default function DashboardPage() {
               )}
 
               {bottomTab === "performance" && (
+                <PerformancePanel perf={perf} resetting={resetting} resetPerformance={resetPerformance} />
+              )}
+
+              {false && bottomTab === "performance" && (
                 <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
                   <div className="flex items-center justify-between mb-3 border-b border-white/5 pb-2">
                     <p className="text-[9px] font-bold text-white/30 uppercase tracking-widest">Metrics / Performance</p>
@@ -834,6 +980,7 @@ export default function DashboardPage() {
             {/* Terminal-style Tabs */}
             <div className="flex border-b border-white/5 bg-[#0b0e14] shrink-0 h-10">
               {([
+                { id: "engine",   label: "ENGINE",   icon: Activity     },
                 { id: "news",     label: "NEWS",     icon: Newspaper    },
                 { id: "calendar", label: "MACRO",    icon: CalendarDays },
                 { id: "history",  label: "LOGS",     icon: History      },
@@ -849,6 +996,13 @@ export default function DashboardPage() {
 
             {/* Tab content */}
             <div className="flex-1 overflow-y-auto p-3 bg-[#0f1219]">
+              {rightTab === "engine" && (
+                <EngineInsightPanel
+                  batch={latestMatchingBatch}
+                  marketState={marketState}
+                  noSetupMessage={noSetupMessage}
+                />
+              )}
               {rightTab === "news" && (
                 newsLoading
                   ? <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-20 rounded bg-white/5 animate-pulse" />)}</div>

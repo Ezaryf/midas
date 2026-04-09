@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import type { MidasConfig } from "@/lib/types";
 import { DEFAULT_CONFIG } from "@/lib/types";
+import { persistedConfigSchema } from "@/lib/schemas/api";
 
 const LS_KEY = "midas_config"; // everything in localStorage — persists across sessions
 
@@ -15,15 +16,17 @@ export function useConfig() {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        setConfig({ ...DEFAULT_CONFIG, ...parsed });
+        const parsed = persistedConfigSchema.safeParse({ ...DEFAULT_CONFIG, ...JSON.parse(raw) });
+        if (parsed.success) {
+          setConfig(parsed.data);
+        }
       }
     } catch { /* ignore */ }
     setLoaded(true);
   }, []);
 
   const save = (updates: Partial<MidasConfig>) => {
-    const next = { ...config, ...updates };
+    const next = persistedConfigSchema.parse({ ...config, ...updates });
     setConfig(next);
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(next));

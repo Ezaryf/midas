@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { fetchWithSchema } from "@/lib/http";
+import { positionsResponseSchema } from "@/lib/schemas/api";
 
 export interface Position {
   ticket: number;
@@ -19,31 +21,18 @@ export interface Position {
 }
 
 export function usePositions(refreshInterval: number = 5000) {
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: ["positions"],
+    queryFn: async () => {
+      const data = await fetchWithSchema("/api/positions", positionsResponseSchema);
+      return data.positions as Position[];
+    },
+    refetchInterval: refreshInterval,
+  });
 
-  useEffect(() => {
-    const fetchPositions = async () => {
-      try {
-        const response = await fetch("/api/positions");
-        if (!response.ok) throw new Error("Failed to fetch positions");
-        
-        const data = await response.json();
-        setPositions(data.positions || []);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPositions();
-    const interval = setInterval(fetchPositions, refreshInterval);
-
-    return () => clearInterval(interval);
-  }, [refreshInterval]);
-
-  return { positions, loading, error };
+  return {
+    positions: query.data ?? [],
+    loading: query.isLoading,
+    error: query.error instanceof Error ? query.error.message : null,
+  };
 }

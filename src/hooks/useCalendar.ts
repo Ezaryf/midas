@@ -1,24 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { CalendarEvent } from "@/lib/mock-data";
+import { fetchWithSchema } from "@/lib/http";
+import { calendarResponseSchema } from "@/lib/schemas/api";
+
 export function useCalendar() {
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [loading, setLoading] = useState(true);
+  const query = useQuery({
+    queryKey: ["calendar"],
+    queryFn: async () => {
+      const data = await fetchWithSchema("/api/calendar", calendarResponseSchema);
+      return data.events as CalendarEvent[];
+    },
+    refetchInterval: 1_800_000,
+  });
 
-  useEffect(() => {
-    fetch("/api/calendar")
-      .then(r => r.json())
-      .then(data => {
-        const mapped: CalendarEvent[] = (data.events ?? []).map((e: CalendarEvent & { scheduledAt: string }) => ({
-          ...e,
-          scheduledAt: new Date(e.scheduledAt),
-        }));
-        setEvents(mapped);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
-
-  return { events, loading };
+  return { events: query.data ?? [], loading: query.isLoading };
 }

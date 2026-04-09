@@ -26,7 +26,7 @@ test.describe('Authentication Flow', () => {
     
     await expect(page.getByPlaceholder(/email/i)).toBeVisible();
     await expect(page.getByPlaceholder(/password/i)).toBeVisible();
-    await expect(page.getByRole('button', { name: /sign up/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /create account/i })).toBeVisible();
     await expect(page.getByText(/already have an account/i)).toBeVisible();
   });
 
@@ -57,8 +57,16 @@ test.describe('Authentication Flow', () => {
     await page.getByPlaceholder(/password/i).fill('password123');
     await page.getByRole('button', { name: /sign in/i }).click();
     
-    // Check for validation error
-    const emailInput = page.getByPlaceholder(/email/i);
-    await expect(emailInput).toHaveAttribute('type', 'email');
+    await expect(page.getByText(/valid email/i)).toBeVisible();
+  });
+
+  test('should validate signup password length', async ({ page }) => {
+    await page.goto('/signup');
+
+    await page.getByPlaceholder(/email/i).fill('valid@test.com');
+    await page.getByPlaceholder(/password/i).fill('short');
+    await page.getByRole('button', { name: /create account/i }).click();
+
+    await expect(page.getByText(/at least 8 characters/i)).toBeVisible();
   });
 });
