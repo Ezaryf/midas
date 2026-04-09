@@ -164,6 +164,38 @@ class RiskManager:
         logger.info(f"Position sizing: Balance ${account_balance:.2f} | Risk ${risk_amount:.2f} | Pip risk {pip_risk:.0f} → Lot {lot_size}")
         
         return lot_size
+
+    def calculate_lot_size_from_shadow_performance(
+        self,
+        *,
+        setup_type: str | None,
+        base_lot_size: float,
+    ) -> float:
+        if not setup_type:
+            return base_lot_size
+
+        try:
+            from app.services.database import db
+
+            stats = db.get_setup_performance_stats(setup_type=setup_type)
+        except Exception:
+            stats = {}
+
+        trades = int(stats.get("trades", 0) or 0)
+        win_rate = float(stats.get("win_rate", 0.0) or 0.0)
+        size_multiplier = 0.25
+        if trades >= 20 and win_rate > 0.70:
+            size_multiplier = 1.0
+        elif trades >= 20 and win_rate >= 0.50:
+            size_multiplier = 0.75
+
+        adjusted = round(base_lot_size * size_multiplier, 2)
+        adjusted = max(self.config.min_lot_size, min(adjusted, self.config.max_lot_size))
+        logger.info(
+            f"Shadow sizing: setup={setup_type} trades={trades} win_rate={win_rate:.2f} "
+            f"multiplier={size_multiplier:.2f} -> lot {adjusted}"
+        )
+        return adjusted
     
     # ── Risk Checks ───────────────────────────────────────────────────────────
     

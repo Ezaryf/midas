@@ -73,15 +73,15 @@ async def health_readiness():
     except Exception as e:
         checks["mt5"] = {"status": "error", "message": str(e)}
 
-    # Supabase check
+    # Database check
     try:
         from app.services.database import db
-        checks["supabase"] = {
+        checks["database"] = {
             "status": "ok" if db.is_enabled() else "unavailable",
             "connected": db.is_enabled(),
         }
     except Exception as e:
-        checks["supabase"] = {"status": "error", "message": str(e)}
+        checks["database"] = {"status": "error", "message": str(e)}
 
     # AI Provider check
     ai_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")

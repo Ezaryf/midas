@@ -5,12 +5,14 @@ Prefers live MT5 bars when available and falls back to Yahoo Finance.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 from math import ceil
 from typing import Optional
 
 import pandas as pd
 
+from app.services.exchange_data import fetch_exchange_ohlcv, supports_exchange_symbol
 from app.services.technical_analysis import fetch_ohlcv as fetch_yahoo_ohlcv
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,10 @@ class CandleSourceResult:
     source: str
     is_live: bool
     confidence_cap: float
+    last_candle_time: datetime | None
+    age_seconds: float | None
+    freshness_ok: bool
+    max_expected_age_seconds: float
     notes: list[str]
 
 
@@ -103,6 +109,57 @@ def _fetch_mt5_ohlcv(symbol: str, timeframe: str, lookback: str) -> Optional[pd.
         return None
 
 
+def _timeframe_seconds(timeframe: str) -> float:
+    return float(_TIMEFRAME_MINUTES.get(timeframe, 15) * 60)
+
+
+def _freshness_metadata(df: pd.DataFrame, timeframe: str) -> tuple[datetime | None, float | None, bool, float]:
+    max_expected_age_seconds = _timeframe_seconds(timeframe)
+    if df.empty:
+        return None, None, False, max_expected_age_seconds
+
+    last_index = df.index[-1]
+    if isinstance(last_index, pd.Timestamp):
+        last_candle_time = last_index.to_pydatetime()
+    else:
+        last_candle_time = pd.Timestamp(last_index).to_pydatetime()
+
+    if last_candle_time.tzinfo is None:
+        last_candle_time = last_candle_time.replace(tzinfo=timezone.utc)
+
+    age_seconds = max((datetime.now(timezone.utc) - last_candle_time).total_seconds(), 0.0)
+    freshness_ok = age_seconds <= max_expected_age_seconds * 2.5
+    return last_candle_time, age_seconds, freshness_ok, max_expected_age_seconds
+
+
+def _build_result(
+    *,
+    df: pd.DataFrame,
+    symbol: str,
+    timeframe: str,
+    lookback: str,
+    source: str,
+    is_live: bool,
+    confidence_cap: float,
+    notes: list[str],
+) -> CandleSourceResult:
+    last_candle_time, age_seconds, freshness_ok, max_expected_age_seconds = _freshness_metadata(df, timeframe)
+    return CandleSourceResult(
+        df=df,
+        symbol=symbol,
+        timeframe=timeframe,
+        lookback=lookback,
+        source=source,
+        is_live=is_live,
+        confidence_cap=confidence_cap,
+        last_candle_time=last_candle_time,
+        age_seconds=age_seconds,
+        freshness_ok=freshness_ok,
+        max_expected_age_seconds=max_expected_age_seconds,
+        notes=notes,
+    )
+
+
 def fetch_candles(symbol: str, timeframe: str, lookback: str) -> Optional[CandleSourceResult]:
     """
     Fetch candles from the best available source.
@@ -110,7 +167,7 @@ def fetch_candles(symbol: str, timeframe: str, lookback: str) -> Optional[Candle
     """
     mt5_df = _fetch_mt5_ohlcv(symbol, timeframe, lookback)
     if mt5_df is not None and len(mt5_df) >= 50:
-        return CandleSourceResult(
+        return _build_result(
             df=mt5_df,
             symbol=symbol,
             timeframe=timeframe,
@@ -121,9 +178,23 @@ def fetch_candles(symbol: str, timeframe: str, lookback: str) -> Optional[Candle
             notes=["live_source", "broker_volume"],
         )
 
+    if supports_exchange_symbol(symbol):
+        exchange_df = fetch_exchange_ohlcv(symbol, timeframe, lookback)
+        if exchange_df is not None and len(exchange_df) >= 50:
+            return _build_result(
+                df=exchange_df,
+                symbol=symbol,
+                timeframe=timeframe,
+                lookback=lookback,
+                source="ccxt-binance",
+                is_live=False,
+                confidence_cap=90.0,
+                notes=["exchange_data", "research_feed"],
+            )
+
     yahoo_df = fetch_yahoo_ohlcv(interval=timeframe, range_=lookback, symbol=symbol)
     if yahoo_df is not None and len(yahoo_df) >= 50:
-        return CandleSourceResult(
+        return _build_result(
             df=yahoo_df,
             symbol=symbol,
             timeframe=timeframe,

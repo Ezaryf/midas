@@ -1,38 +1,43 @@
 import asyncio
+from collections import deque
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Optional
 
 from app.api.ws.mt5_handler import manager
+from app.services.kill_switch import KillSwitch, KillSwitchContext
+from app.services.runtime_state import runtime_state
 
 logger = logging.getLogger(__name__)
 
 ANALYSIS_INTERVAL = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", "10"))
 
-# Trading session times (GMT)
 LONDON_SESSION = (8, 12)
 NY_SESSION = (13, 17)
 
-# Daily limits
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "5"))
 MAX_DAILY_LOSS_PCT = 2.0
 MAX_CONSECUTIVE_LOSSES = 3
 
-# Broker costs (kept for compatibility with bridge/test tooling)
 GOLD_SPREAD_POINTS = 5.0
 COMMISSION_PER_LOT = 2.0
+RECENT_PRIMARY_REGIMES: deque[str] = deque(maxlen=3)
 
 STYLE_CONFIG = {
     "Scalper": {
-        "timeframes": ["5m", "1m"],
-        "lookback": ["2d", "1d"],
+        "timeframes": ["1m", "5m"],
+        "lookback": ["1d", "2d"],
         "min_pattern_confidence": 58,
-        "auto_execute_confidence": 78,
-        "rr_min": 1.35,
-        "rr_target": 1.9,
-        "stop_buffer_atr": 0.30,
-        "entry_window_atr": 0.12,
+        "auto_execute_confidence": 72,
+        "rr_min": 1.15,
+        "rr_target": 1.6,
+        "stop_buffer_atr": 0.24,
+        "entry_window_atr": 0.18,
         "max_backups": 2,
+        "allow_off_session_live": True,
+        "tick_freshness_seconds": 90,
+        "micro_scalp": True,
     },
     "Intraday": {
         "timeframes": ["15m", "1h"],
@@ -59,59 +64,42 @@ STYLE_CONFIG = {
 }
 
 
-async def background_trading_loop():
-    logger.info(f"Trading loop started. Analysis every {ANALYSIS_INTERVAL}s.")
+def _latest_tick_is_recent(target_symbol: Optional[str] = None, freshness_seconds: int = 90) -> bool:
+    latest_tick = runtime_state.get_tick() or manager.latest_tick or {}
+    if not latest_tick:
+        return False
 
-    from app.services.trading_state import trading_state as state
+    tick_symbol = latest_tick.get("symbol")
+    if target_symbol and tick_symbol and tick_symbol != target_symbol:
+        return False
+
+    raw_time = latest_tick.get("time") or latest_tick.get("received_at")
+    if not raw_time:
+        return bool(latest_tick.get("bid"))
 
     try:
-        style = state.trading_style or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
-        symbol = getattr(state, "target_symbol", "XAUUSD")
-        if is_trading_session_active():
-            await run_analysis_cycle(trading_style=style, symbol=symbol)
-        else:
-            logger.info("Outside trading hours - skipping initial analysis")
-    except Exception as exc:
-        logger.error(f"Initial analysis error: {exc}")
+        tick_time = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+    except ValueError:
+        return bool(latest_tick.get("bid"))
 
-    while True:
-        try:
-            await asyncio.sleep(ANALYSIS_INTERVAL)
-            state.check_and_reset_daily()
+    if tick_time.tzinfo is None:
+        tick_time = tick_time.replace(tzinfo=timezone.utc)
 
-            max_daily_trades = int(os.getenv("MAX_DAILY_TRADES", "5"))
-            if state.daily_trades >= max_daily_trades:
-                logger.warning(f"Daily trade limit reached ({max_daily_trades}). Pausing until tomorrow.")
-                await asyncio.sleep(300)
-                continue
-
-            if state.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                logger.warning(f"Consecutive loss limit reached ({MAX_CONSECUTIVE_LOSSES}). Pausing for 1 hour.")
-                await asyncio.sleep(3600)
-                state.reset_consecutive_losses()
-                continue
-
-            if not is_trading_session_active():
-                logger.debug("Outside trading hours - skipping analysis")
-                continue
-
-            if is_high_impact_news_upcoming():
-                logger.warning("High-impact news event within 30 minutes - skipping analysis")
-                continue
-
-            style = state.trading_style or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
-            symbol = getattr(state, "target_symbol", "XAUUSD")
-            await run_analysis_cycle(trading_style=style, symbol=symbol)
-
-        except asyncio.CancelledError:
-            logger.info("Trading loop cancelled.")
-            raise
-        except Exception as exc:
-            logger.error(f"Trading loop error: {exc}")
-            await asyncio.sleep(30)
+    age_seconds = (datetime.now(timezone.utc) - tick_time).total_seconds()
+    return age_seconds <= freshness_seconds and bool(latest_tick.get("bid"))
 
 
-def is_trading_session_active() -> bool:
+def is_trading_session_active(style: str | None = None, symbol: str | None = None) -> bool:
+    if os.getenv("DISABLE_SESSION_FILTER", "0") == "1":
+        return True
+
+    if style in STYLE_CONFIG:
+        cfg = STYLE_CONFIG[style]
+        if cfg.get("allow_off_session_live"):
+            freshness_seconds = int(cfg.get("tick_freshness_seconds", 90))
+            if _latest_tick_is_recent(symbol, freshness_seconds):
+                return True
+
     current_hour = datetime.now(timezone.utc).hour
     if LONDON_SESSION[0] <= current_hour < LONDON_SESSION[1]:
         return True
@@ -122,9 +110,11 @@ def is_trading_session_active() -> bool:
 
 def is_high_impact_news_upcoming(minutes_ahead: int = 30) -> bool:
     try:
-        from app.services.forex_factory import get_forex_factory
         from datetime import timedelta
+
         from dateutil import parser as dtparser
+
+        from app.services.forex_factory import get_forex_factory
 
         ff = get_forex_factory()
         events = ff.get_weekly_events()
@@ -160,249 +150,107 @@ def is_high_impact_news_upcoming(minutes_ahead: int = 30) -> bool:
 
 
 async def run_analysis_cycle(trading_style: str | None = None, symbol: str | None = None):
-    from app.schemas.signal import AnalysisBatch, TradeSignal
-    from app.services.ai_engine import AITradingEngine
-    from app.services.candle_source import fetch_candles
-    from app.services.database import db
-    from app.services.forex_factory import ForexFactoryService
-    from app.services.market_state import build_analysis_batch, build_snapshot
-    from app.services.pattern_recognition import PatternRecognizer
-    from app.services.technical_analysis import compute_indicators
+    from app.services.analysis_pipeline import TradingEngine
+    from app.services.risk_manager import get_risk_manager
+    from app.services.trading_state import trading_state
 
-    style = trading_style or os.getenv("TRADING_STYLE", "Scalper")
+    style = trading_style or runtime_state.get_trading_style() or os.getenv("TRADING_STYLE", "Scalper")
     style = style.capitalize() if style.lower() in ("scalper", "intraday", "swing") else style
     if style not in STYLE_CONFIG:
         style = "Scalper"
 
-    target_symbol = symbol or "XAUUSD"
+    target_symbol = symbol or runtime_state.get_target_symbol() or "XAUUSD"
     config = STYLE_CONFIG[style]
-    loop = asyncio.get_event_loop()
-
     logger.info(
         f"Analysis: symbol={target_symbol} | style={style} | "
         f"TFs={config['timeframes']} | RR={config['rr_min']}-{config['rr_target']}"
     )
 
-    def build_no_data_batch() -> AnalysisBatch:
-        current_price = float(manager.latest_tick.get("bid", 0.0)) if manager.latest_tick else 0.0
-        hold = TradeSignal(
+    risk_manager = get_risk_manager()
+    drawdown_pct = 0.0
+    if risk_manager:
+        account = risk_manager.get_account_info()
+        balance = float(account.get("balance", 0.0) or 0.0)
+        equity = float(account.get("equity", 0.0) or 0.0)
+        if balance > 0:
+            drawdown_pct = ((balance - equity) / balance) * 100.0
+
+    precheck = KillSwitch.check(
+        KillSwitchContext(
             symbol=target_symbol,
-            direction="HOLD",
-            entry_price=current_price,
-            stop_loss=current_price,
-            take_profit_1=current_price,
-            take_profit_2=current_price,
-            confidence=0,
-            reasoning="No trade: insufficient candle data from MT5 and Yahoo sources.",
-            trading_style=style,
-            setup_type="no_data",
-            market_regime="unknown",
-            score=0,
-            rank=1,
-            is_primary=True,
-            entry_window_low=current_price,
-            entry_window_high=current_price,
-            context_tags=["no_data"],
-            source="unavailable",
+            drawdown_pct=drawdown_pct,
+            consecutive_losses=int(getattr(trading_state, "consecutive_losses", 0)),
+            transition_cluster=len(RECENT_PRIMARY_REGIMES) == 3 and all(regime == "transition" for regime in RECENT_PRIMARY_REGIMES),
         )
-        return AnalysisBatch(
-            analysis_batch_id="no-data",
+    )
+    if precheck.halt_trading:
+        KillSwitch.log_event(
             symbol=target_symbol,
-            trading_style=style,
-            evaluated_at=datetime.now(timezone.utc),
-            market_regime="unknown",
-            regime_summary="No analysis batch generated because no usable candles were available.",
-            source="unavailable",
-            source_is_live=False,
-            primary=hold,
-            backups=[],
+            decision=precheck,
+            context={"drawdown_pct": drawdown_pct, "consecutive_losses": getattr(trading_state, "consecutive_losses", 0)},
         )
+        logger.warning(f"Kill switch halted analysis cycle: {', '.join(precheck.reasons)}")
+        return None
 
-    datasets: dict[str, tuple] = {}
-    patterns_by_timeframe: dict[str, list] = {}
-    current_price: float | None = None
-
-    for timeframe, lookback in zip(config["timeframes"], config["lookback"]):
-        source_result = await loop.run_in_executor(None, fetch_candles, target_symbol, timeframe, lookback)
-        if source_result is None:
-            logger.warning(f"  {timeframe}: no candle source available")
-            continue
-
-        df = await loop.run_in_executor(None, compute_indicators, source_result.df)
-        source_result.df = df
-        datasets[timeframe] = (source_result, df)
-
-        if current_price is None and not df.empty:
-            current_price = float(df.iloc[-1]["close"])
-
-        recognizer = PatternRecognizer(min_confidence=config["min_pattern_confidence"])
-        try:
-            tf_patterns = await loop.run_in_executor(None, recognizer.detect_all_patterns, df)
-        except Exception as exc:
-            logger.error(f"Pattern detection failed for {timeframe}: {exc}")
-            tf_patterns = []
-
-        for pattern in tf_patterns:
-            pattern.timeframe = timeframe
-        patterns_by_timeframe[timeframe] = tf_patterns
-
-        logger.info(
-            f"  {timeframe}: source={source_result.source} live={source_result.is_live} patterns={len(tf_patterns)}"
-        )
-
-    primary_tf = config["timeframes"][0]
-    if primary_tf not in datasets:
-        batch = build_no_data_batch()
-        await manager.broadcast_json({"type": "SIGNAL_BATCH", "data": batch.model_dump(mode="json")})
-        return batch
-
-    latest_tick = manager.latest_tick or {}
-    if latest_tick.get("symbol", target_symbol) == target_symbol and latest_tick.get("bid"):
-        current_price = float(latest_tick["bid"])
-    else:
-        current_price = current_price or float(datasets[primary_tf][1].iloc[-1]["close"])
-
-    snapshots: dict[str, object] = {}
-    for timeframe, (source_result, df) in datasets.items():
-        snapshots[timeframe] = build_snapshot(
-            df=df,
-            timeframe=timeframe,
-            source=source_result.source,
-            is_live=source_result.is_live,
-            current_price=current_price,
-        )
-
-    # ── Broadcast Market State snapshot for live dashboard metrics ──
-    primary_snapshot = snapshots[primary_tf]
-    market_state_payload = {
-        "timeframe": primary_snapshot.timeframe,
-        "source": primary_snapshot.source,
-        "is_live": primary_snapshot.is_live,
-        "current_price": round(primary_snapshot.current_price, 2),
-        "atr": round(primary_snapshot.atr, 2),
-        "avg_body": round(primary_snapshot.avg_body, 2),
-        "body_strength": round(primary_snapshot.body_strength, 3),
-        "upper_wick": round(primary_snapshot.upper_wick, 2),
-        "lower_wick": round(primary_snapshot.lower_wick, 2),
-        "close_location": round(primary_snapshot.close_location, 3),
-        "relative_volume": round(primary_snapshot.relative_volume, 3),
-        "efficiency_ratio": round(primary_snapshot.efficiency_ratio, 3),
-        "compression_ratio": round(primary_snapshot.compression_ratio, 3),
-        "ema_slope": round(primary_snapshot.ema_slope, 4),
-        "range_high": round(primary_snapshot.range_high, 2),
-        "range_low": round(primary_snapshot.range_low, 2),
-        "range_width": round(primary_snapshot.range_width, 2),
-        "boundary_touches_high": primary_snapshot.boundary_touches_high,
-        "boundary_touches_low": primary_snapshot.boundary_touches_low,
-        "recent_high": round(primary_snapshot.recent_high, 2),
-        "recent_low": round(primary_snapshot.recent_low, 2),
-        "support": round(primary_snapshot.support, 2),
-        "resistance": round(primary_snapshot.resistance, 2),
-        "recent_minor_high": round(primary_snapshot.recent_minor_high, 2),
-        "prior_minor_high": round(primary_snapshot.prior_minor_high, 2),
-        "recent_minor_low": round(primary_snapshot.recent_minor_low, 2),
-        "prior_minor_low": round(primary_snapshot.prior_minor_low, 2),
-        "swings": primary_snapshot.swings,
-        "regime": primary_snapshot.regime,
-        "regime_confidence": round(primary_snapshot.regime_confidence, 1),
-        "notes": primary_snapshot.notes,
-        "symbol": target_symbol,
-        "trading_style": style,
-    }
-    await manager.broadcast_json({"type": "MARKET_STATE", "data": market_state_payload})
-
-    batch = build_analysis_batch(
+    engine = TradingEngine(STYLE_CONFIG)
+    response = await engine.analyze(
+        trading_style=style,
         symbol=target_symbol,
-        style=style,
-        snapshots=snapshots,
-        style_cfg=config,
-        patterns_by_timeframe=patterns_by_timeframe,
+        session_active=is_trading_session_active(style=style, symbol=target_symbol),
+        news_blocked=is_high_impact_news_upcoming(),
+        risk_blocked=False,
+        publish=True,
+        transition_penalty_active=len(RECENT_PRIMARY_REGIMES) == 3 and all(regime == "transition" for regime in RECENT_PRIMARY_REGIMES),
     )
+    RECENT_PRIMARY_REGIMES.append(response.data.market_regime)
+    return response.data
 
-    def matching_patterns(signal: TradeSignal) -> list[dict]:
-        primary_snapshot = snapshots[primary_tf]
-        tolerance = max(getattr(primary_snapshot, "atr", 1.0) * 1.2, 0.1)
-        matches: list[dict] = []
-        for tf_patterns in patterns_by_timeframe.values():
-            for pattern in tf_patterns:
-                direction = getattr(pattern, "direction", "")
-                entry = float(getattr(pattern, "entry_price", signal.entry_price))
-                if direction != signal.direction or abs(entry - signal.entry_price) > tolerance:
-                    continue
-                matches.append(
-                    {
-                        "type": getattr(getattr(pattern, "type", None), "value", str(getattr(pattern, "type", "pattern"))),
-                        "confidence": round(float(getattr(pattern, "confidence", 0.0)), 1),
-                        "description": getattr(pattern, "description", ""),
-                    }
-                )
-        matches.sort(key=lambda item: item["confidence"], reverse=True)
-        return matches[:3]
 
-    batch.primary.patterns = matching_patterns(batch.primary)
-    for backup in batch.backups:
-        backup.patterns = matching_patterns(backup)
+async def background_trading_loop():
+    logger.info(f"Trading loop started. Analysis every {ANALYSIS_INTERVAL}s.")
 
-    api_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    provider = os.getenv("AI_PROVIDER", "openai")
-    if api_key and batch.primary.direction in ("BUY", "SELL"):
+    from app.services.trading_state import trading_state as state
+
+    try:
+        style = state.trading_style or runtime_state.get_trading_style() or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
+        symbol = getattr(state, "target_symbol", None) or runtime_state.get_target_symbol() or "XAUUSD"
+        logger.info("Running forceful initial analysis on startup.")
+        await run_analysis_cycle(trading_style=style, symbol=symbol)
+    except Exception as exc:
+        logger.error(f"Initial analysis error: {exc}")
+
+    while True:
         try:
-            batch = await AITradingEngine.explain_batch_with_fallback(
-                batch=batch,
-                primary_provider=provider,
-                primary_api_key=api_key,
-            )
+            await asyncio.sleep(ANALYSIS_INTERVAL)
+            state.check_and_reset_daily()
+
+            max_daily_trades = int(os.getenv("MAX_DAILY_TRADES", "5"))
+            if state.daily_trades >= max_daily_trades:
+                logger.warning(f"Daily trade limit reached ({max_daily_trades}). Pausing until tomorrow.")
+                await asyncio.sleep(300)
+                continue
+
+            if state.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                logger.warning(f"Consecutive loss limit reached ({MAX_CONSECUTIVE_LOSSES}). Pausing for 1 hour.")
+                await asyncio.sleep(3600)
+                state.reset_consecutive_losses()
+                continue
+
+            style = state.trading_style or runtime_state.get_trading_style() or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
+            symbol = getattr(state, "target_symbol", None) or runtime_state.get_target_symbol() or "XAUUSD"
+            if not is_trading_session_active(style=style, symbol=symbol):
+                logger.debug("Outside trading hours - skipping analysis")
+                continue
+
+            if is_high_impact_news_upcoming():
+                logger.warning("High-impact news event within 30 minutes - skipping analysis")
+                continue
+
+            await run_analysis_cycle(trading_style=style, symbol=symbol)
+
+        except asyncio.CancelledError:
+            logger.info("Trading loop cancelled.")
+            raise
         except Exception as exc:
-            logger.error(f"AI batch explanation failed: {exc}")
-
-    ff = ForexFactoryService()
-    calendar_events = ff.get_weekly_events()[:5]
-    primary_snapshot = snapshots[primary_tf]
-    primary_row = datasets[primary_tf][1].iloc[-1]
-    indicators = {
-        "RSI_14": round(float(primary_row.get("RSI_14", 50.0)), 2),
-        "MACD_12_26_9": round(float(primary_row.get("MACDh_12_26_9", 0.0)), 4),
-        "ATRr_14": round(float(primary_row.get("ATRr_14", getattr(primary_snapshot, "atr", 0.0))), 2),
-        "EMA_9": round(float(primary_row.get("EMA_9", 0.0)), 2),
-        "EMA_21": round(float(primary_row.get("EMA_21", 0.0)), 2),
-        "EMA_50": round(float(primary_row.get("EMA_50", 0.0)), 2),
-        "symbol": target_symbol,
-    }
-    trend = getattr(primary_snapshot, "regime", "neutral").upper()
-
-    for signal in [batch.primary, *batch.backups]:
-        signal_id = db.save_signal(
-            signal=signal,
-            indicators=indicators,
-            calendar_events=calendar_events,
-            current_price=current_price,
-            trend=trend,
-            ai_provider=provider if api_key else "deterministic",
-            ai_model="bounded-explainer" if api_key else "rule-engine",
-            regime_summary=batch.regime_summary,
-        )
-        if signal_id not in {"db_disabled", "error"}:
-            signal.signal_id = signal_id
-            signal.id = signal_id
-
-    batch_payload = batch.model_dump(mode="json")
-    logger.info(
-        f"Broadcasting ranked batch: primary={batch.primary.direction} "
-        f"setup={batch.primary.setup_type} backups={len(batch.backups)}"
-    )
-    await manager.broadcast_json({"type": "SIGNAL_BATCH", "data": batch_payload})
-
-    primary_payload = batch.primary.model_dump(mode="json")
-    primary_payload["auto_execute"] = (
-        batch.primary.direction in ("BUY", "SELL")
-        and batch.primary.confidence >= config["auto_execute_confidence"]
-    )
-    await manager.broadcast_json(
-        {
-            "type": "SIGNAL",
-            "action": "PLACE_ORDER" if primary_payload["auto_execute"] else "DISPLAY",
-            "data": primary_payload,
-        }
-    )
-
-    return batch
+            logger.error(f"Trading loop error: {exc}")
+            await asyncio.sleep(30)

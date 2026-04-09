@@ -3,6 +3,8 @@ import json
 import logging
 from collections import deque
 
+from app.services.runtime_state import runtime_state
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -42,17 +44,31 @@ class MT5ConnectionManager:
 
     async def broadcast_json(self, data: dict):
         """Sends a JSON payload to all active connections."""
+        import math
+        def sanitize_json_payload(obj):
+            if isinstance(obj, float):
+                if math.isnan(obj) or math.isinf(obj):
+                    return None
+                return obj
+            elif isinstance(obj, dict):
+                return {k: sanitize_json_payload(v) for k, v in obj.items()}
+            elif isinstance(obj, list) or isinstance(obj, tuple):
+                return [sanitize_json_payload(v) for v in obj]
+            return obj
+
+        sanitized_data = sanitize_json_payload(data)
+
         if not self.active_connections:
             # No bridge connected — queue the signal for when it reconnects
-            if data.get("type") == "SIGNAL":
-                self._pending_signals.append(data)
+            if sanitized_data.get("type") == "SIGNAL":
+                self._pending_signals.append(sanitized_data)
                 logger.warning("No bridge connected — signal queued for next connection.")
             return
 
         dead = []
         for conn in self.active_connections:
             try:
-                await conn.send_json(data)
+                await conn.send_json(sanitized_data)
             except Exception as e:
                 logger.error(f"Failed to send to client: {e}")
                 dead.append(conn)
@@ -75,7 +91,14 @@ class MT5ConnectionManager:
         
         if msg_type == "TICK":
             # Price update from MT5
-            self.latest_tick = data.get("data")
+            tick_data = data.get("data", {})
+            symbol = tick_data.get("symbol")
+            if symbol and symbol != runtime_state.get_target_symbol():
+                runtime_state.set_target_symbol(symbol)
+                logger.info(f"Target symbol synced to: {symbol}")
+
+            self.latest_tick = tick_data
+            runtime_state.set_tick(self.latest_tick)
             await self.broadcast_json({"type": "TICK", "data": self.latest_tick})
         
         elif msg_type == "ACK":

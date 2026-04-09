@@ -46,6 +46,8 @@ class MarketSnapshot:
     swings: list[dict]
     regime: str
     regime_confidence: float
+    regime_stability: float
+    regime_history: list[str]
     notes: list[str] = field(default_factory=list)
 
 
@@ -66,6 +68,26 @@ class SetupCandidate:
     reasoning: str
     context_tags: list[str] = field(default_factory=list)
     source: str = "unknown"
+    evidence: dict[str, float] = field(default_factory=dict)
+    no_trade_reasons: list[dict[str, str | bool]] = field(default_factory=list)
+    is_rejected: bool = False
+
+
+@dataclass
+class RankedSetupBook:
+    selected: list[SetupCandidate] = field(default_factory=list)
+    rejected: list[SetupCandidate] = field(default_factory=list)
+
+
+PHASE_DETAILS: dict[str, tuple[str, str]] = {
+    "compression": ("Compression", "Volatility is compressing and the engine is waiting for expansion."),
+    "breakout": ("Breakout", "Price is leaving a defined box and momentum confirmation is active."),
+    "impulse": ("Impulse", "Directional flow is strong and the market is extending away from balance."),
+    "pullback": ("Pullback", "Trend is intact, but price is retracing into a continuation zone."),
+    "continuation": ("Continuation", "Structure and momentum still support the active directional move."),
+    "weakening": ("Weakening", "Trend strength is fading and reversal or failure signals are building."),
+    "range": ("Range", "Auction is rotating between support and resistance with mean-reversion behavior."),
+}
 
 
 def _safe_div(num: float, den: float, default: float = 0.0) -> float:
@@ -126,6 +148,145 @@ def _relative_volume(volume: pd.Series, lookback: int = 20) -> float:
     return current / baseline
 
 
+def _classify_regime_state(recent: pd.DataFrame) -> tuple[str, float]:
+    if recent.empty:
+        return "transition", 35.0
+
+    recent = recent.copy()
+    box = recent.iloc[:-1] if len(recent) > 10 else recent
+    last = recent.iloc[-1]
+    atr = float(last.get("ATRr_14", recent["high"].sub(recent["low"]).tail(14).mean()))
+    atr = max(atr, 0.01)
+    body = abs(float(last["close"] - last["open"]))
+    avg_body = float(recent["close"].sub(recent["open"]).abs().tail(14).mean()) or atr * 0.25
+    total_range = max(float(last["high"] - last["low"]), 0.01)
+    upper_wick = float(last["high"] - max(last["open"], last["close"]))
+    lower_wick = float(min(last["open"], last["close"]) - last["low"])
+    close_location = _safe_div(float(last["close"] - last["low"]), total_range, 0.5)
+
+    atr_series = recent.get("ATRr_14", recent["high"].sub(recent["low"]))
+    recent_atr = float(atr_series.tail(8).mean())
+    prior_atr = float(atr_series.tail(24).head(16).mean()) if len(atr_series) >= 24 else recent_atr
+    compression_ratio = _safe_div(recent_atr, prior_atr or recent_atr, 1.0)
+
+    ema_slope = float(last.get("EMA_9", last["close"]) - recent.iloc[-5].get("EMA_9", recent.iloc[-5]["close"])) if len(recent) >= 5 else 0.0
+    range_high = float(box["high"].tail(20).max())
+    range_low = float(box["low"].tail(20).min())
+    range_width = max(range_high - range_low, atr)
+    efficiency = _efficiency_ratio(recent["close"], 14)
+    recent_high = float(recent["high"].tail(10).max())
+    recent_low = float(recent["low"].tail(10).min())
+    body_strength = _safe_div(body, avg_body or body, 1.0)
+
+    regime = "neutral"
+    regime_confidence = 35.0
+    if range_width < (atr * 4.0) and efficiency < 0.5:
+        regime = "range"
+        regime_confidence = 72.0
+    elif float(last["close"]) > range_high and body_strength >= 1.2 and close_location > 0.6:
+        regime = "breakout_up"
+        regime_confidence = 78.0
+    elif float(last["close"]) < range_low and body_strength >= 1.2 and close_location < 0.4:
+        regime = "breakout_down"
+        regime_confidence = 78.0
+    elif ema_slope > atr * 0.15 and efficiency > 0.55:
+        regime = "trend_up"
+        regime_confidence = 66.0
+    elif ema_slope < -atr * 0.15 and efficiency > 0.55:
+        regime = "trend_down"
+        regime_confidence = 66.0
+
+    if regime != "range" and upper_wick > body * 1.8 and float(last["high"]) >= recent_high - atr * 0.1:
+        regime = "reversal_down"
+        regime_confidence = max(regime_confidence, 70.0)
+    elif regime != "range" and lower_wick > body * 1.8 and float(last["low"]) <= recent_low + atr * 0.1:
+        regime = "reversal_up"
+        regime_confidence = max(regime_confidence, 70.0)
+
+    if regime == "neutral" and compression_ratio < 0.9:
+        regime = "compression"
+        regime_confidence = 60.0
+
+    return regime, regime_confidence
+
+
+def _regime_direction(regime: str) -> str:
+    if regime.endswith("_up"):
+        return "bullish"
+    if regime.endswith("_down"):
+        return "bearish"
+    return "neutral"
+
+
+def _regime_primary(regime: str) -> str:
+    if regime == "range":
+        return "range"
+    if regime == "compression":
+        return "compression"
+    if regime.startswith("trend") or regime.startswith("breakout"):
+        return "trend"
+    if regime.startswith("reversal"):
+        return "transition"
+    if regime == "transition":
+        return "transition"
+    return "compression" if regime == "neutral" else "transition"
+
+
+def determine_regime_smoothed(recent: pd.DataFrame) -> tuple[str, float, float, list[str]]:
+    if recent.empty:
+        return "transition", 35.0, 0.0, []
+
+    history: list[str] = []
+    confidences: list[float] = []
+    max_points = min(3, len(recent))
+    for offset in range(max_points, 0, -1):
+        truncated = recent.iloc[: len(recent) - offset + 1]
+        regime, confidence = _classify_regime_state(truncated)
+        history.append(regime)
+        confidences.append(confidence)
+
+    if not history:
+        return "transition", 35.0, 0.0, []
+
+    primary_counts: dict[str, int] = {}
+    for regime in history:
+        primary = _regime_primary(regime)
+        primary_counts[primary] = primary_counts.get(primary, 0) + 1
+
+    dominant_primary, dominant_count = max(primary_counts.items(), key=lambda item: item[1])
+    regime_stability = round(dominant_count / len(history), 2)
+
+    directions = [_regime_direction(regime) for regime in history]
+    alternating_bias = (
+        len(directions) == 3
+        and directions[0] in {"bullish", "bearish"}
+        and directions[1] in {"bullish", "bearish"}
+        and directions[2] in {"bullish", "bearish"}
+        and directions[0] != directions[1]
+        and directions[1] != directions[2]
+    )
+    if dominant_count < 2 or alternating_bias:
+        return "transition", round(sum(confidences) / len(confidences), 1), regime_stability, history
+
+    if dominant_primary == "trend":
+        bullish = sum(1 for direction in directions if direction == "bullish")
+        bearish = sum(1 for direction in directions if direction == "bearish")
+        if bullish > bearish:
+            smoothed_regime = "trend_up"
+        elif bearish > bullish:
+            smoothed_regime = "trend_down"
+        else:
+            smoothed_regime = history[-1]
+    elif dominant_primary == "range":
+        smoothed_regime = "range"
+    elif dominant_primary == "compression":
+        smoothed_regime = "compression"
+    else:
+        smoothed_regime = "transition"
+
+    return smoothed_regime, round(sum(confidences) / len(confidences), 1), regime_stability, history
+
+
 def build_snapshot(df: pd.DataFrame, timeframe: str, source: str, is_live: bool, current_price: float) -> MarketSnapshot:
     recent = _recent_slice(df, 40).copy()
     box = recent.iloc[:-1] if len(recent) > 10 else recent
@@ -168,30 +329,9 @@ def build_snapshot(df: pd.DataFrame, timeframe: str, source: str, is_live: bool,
     rel_volume = _relative_volume(recent["volume"], 20)
     body_strength = _safe_div(body, avg_body or body, 1.0)
 
-    regime = "neutral"
-    regime_confidence = 35.0
-    if touches_high >= 2 and touches_low >= 2 and efficiency < 0.45 and compression_ratio < 1.15:
-        regime = "range"
-        regime_confidence = 72.0
-    elif float(last["close"]) >= resistance - atr * 0.03 and body_strength > 0.95 and close_location > 0.6:
-        regime = "breakout_up"
-        regime_confidence = 78.0
-    elif float(last["close"]) <= support + atr * 0.03 and body_strength > 0.95 and close_location < 0.4:
-        regime = "breakout_down"
-        regime_confidence = 78.0
-    elif ema_slope > atr * 0.15 and efficiency > 0.55:
-        regime = "trend_up"
-        regime_confidence = 66.0
-    elif ema_slope < -atr * 0.15 and efficiency > 0.55:
-        regime = "trend_down"
-        regime_confidence = 66.0
-
-    if regime != "range" and upper_wick > body * 1.8 and float(last["high"]) >= recent_high - atr * 0.1:
-        regime = "reversal_down"
-        regime_confidence = max(regime_confidence, 70.0)
-    elif regime != "range" and lower_wick > body * 1.8 and float(last["low"]) <= recent_low + atr * 0.1:
-        regime = "reversal_up"
-        regime_confidence = max(regime_confidence, 70.0)
+    regime, base_regime_confidence = _classify_regime_state(recent)
+    regime, smoothed_confidence, regime_stability, regime_history = determine_regime_smoothed(recent)
+    regime_confidence = round(max(base_regime_confidence, smoothed_confidence) * max(regime_stability, 0.5), 1)
 
     notes: list[str] = []
     if not is_live:
@@ -200,6 +340,8 @@ def build_snapshot(df: pd.DataFrame, timeframe: str, source: str, is_live: bool,
         notes.append("compression")
     if rel_volume > 1.25:
         notes.append("volume_expansion")
+    if regime == "transition":
+        notes.append("regime_transition")
 
     return MarketSnapshot(
         timeframe=timeframe,
@@ -232,8 +374,37 @@ def build_snapshot(df: pd.DataFrame, timeframe: str, source: str, is_live: bool,
         swings=swings,
         regime=regime,
         regime_confidence=regime_confidence,
+        regime_stability=regime_stability,
+        regime_history=regime_history,
         notes=notes,
     )
+
+
+def determine_market_phase(snapshot: MarketSnapshot) -> tuple[str, str, str]:
+    if snapshot.regime == "range":
+        key = "range"
+    elif snapshot.regime == "compression":
+        key = "compression"
+    elif snapshot.regime == "transition":
+        key = "weakening"
+    elif snapshot.regime.startswith("breakout"):
+        key = "breakout"
+    elif snapshot.regime.startswith("reversal"):
+        key = "weakening"
+    elif snapshot.compression_ratio < 0.9 and snapshot.regime == "neutral":
+        key = "compression"
+    elif snapshot.regime.startswith("trend") and snapshot.efficiency_ratio > 0.65 and snapshot.body_strength >= 1.0:
+        key = "continuation"
+    elif snapshot.regime.startswith("trend") and snapshot.efficiency_ratio > 0.55:
+        key = "impulse"
+    elif snapshot.regime.startswith("trend"):
+        key = "pullback"
+    elif snapshot.recent_minor_high < snapshot.prior_minor_high and snapshot.ema_slope < 0:
+        key = "weakening"
+    else:
+        key = "compression"
+    label, description = PHASE_DETAILS[key]
+    return key, label, description
 
 
 def _pattern_adjustments(candidate: SetupCandidate, patterns: Iterable, atr: float) -> tuple[float, list[str]]:
@@ -266,7 +437,7 @@ def _score_candidate(
     style_rr_target: float,
     direction: str,
     pattern_boost: float,
-) -> tuple[float, float]:
+) -> tuple[float, float, dict[str, float]]:
     risk = abs(entry_price - stop_loss)
     reward = abs(take_profit_1 - entry_price)
     rr = _safe_div(reward, risk, 0.0)
@@ -274,6 +445,7 @@ def _score_candidate(
     invalidation_quality = _clamp(risk / max(snapshot.atr, 0.01), 0.25, 1.75)
     invalidation_score = 12.0 - abs(invalidation_quality - 0.9) * 8.0
     confluence = 0.0
+    source_quality = 1.0 if snapshot.is_live else 0.72
     if secondary:
         if direction == "BUY" and secondary.regime in {"trend_up", "breakout_up", "reversal_up"}:
             confluence += 8.0
@@ -293,7 +465,19 @@ def _score_candidate(
     )
     if not snapshot.is_live:
         score -= 8.0
-    return _clamp(score, 0.0, 99.0), rr
+    evidence = {
+        "regime_alignment": round(snapshot.regime_confidence, 2),
+        "structure_confirmation": round(structure_score, 2),
+        "actionability": round(proximity * 100, 2),
+        "confluence": round(confluence, 2),
+        "invalidation_quality": round(max(invalidation_score, 0.0), 2),
+        "source_quality": round(source_quality * 100, 2),
+        "conflict_penalty": 0.0,
+        "pattern_boost": round(pattern_boost, 2),
+        "rr": round(rr, 4),
+        "proximity": round(proximity, 4),
+    }
+    return _clamp(score, 0.0, 99.0), rr, evidence
 
 
 def _build_candidate(
@@ -345,7 +529,7 @@ def _build_candidate(
         patterns,
         snapshot.atr,
     )
-    score, rr = _score_candidate(
+    score, rr, evidence = _score_candidate(
         snapshot=snapshot,
         secondary=secondary,
         entry_price=entry_price,
@@ -356,11 +540,9 @@ def _build_candidate(
         direction=direction,
         pattern_boost=pattern_boost,
     )
-    if rr + 1e-6 < style_cfg["rr_min"]:
-        return None
 
     window_half = snapshot.atr * style_cfg.get("entry_window_atr", 0.18)
-    return SetupCandidate(
+    candidate = SetupCandidate(
         direction=direction,
         setup_type=setup_type,
         market_regime=regime,
@@ -376,7 +558,18 @@ def _build_candidate(
         reasoning=reasoning,
         context_tags=context_tags + pattern_tags,
         source=snapshot.source,
+        evidence=evidence,
     )
+    if rr + 1e-6 < style_cfg["rr_min"]:
+        candidate.is_rejected = True
+        candidate.no_trade_reasons.append(
+            {
+                "code": "rr_below_min",
+                "message": f"Risk/reward {rr:.2f} is below the minimum threshold of {style_cfg['rr_min']:.2f}.",
+                "blocking": True,
+            }
+        )
+    return candidate
 
 
 def _latest_swing(swings: list[dict], swing_type: str, skip_last: int = 0) -> Optional[dict]:
@@ -393,8 +586,8 @@ def _detect_breakout(snapshot: MarketSnapshot, secondary: Optional[MarketSnapsho
 
     if (
         snapshot.regime in {"breakout_up", "trend_up"}
-        and snapshot.current_price >= snapshot.resistance - snapshot.atr * 0.2
-        and snapshot.body_strength >= 0.9
+        and snapshot.current_price > snapshot.resistance
+        and snapshot.body_strength >= 1.1
     ):
         entry = max(snapshot.current_price, snapshot.resistance + breakout_buffer)
         stop = snapshot.resistance - stop_buffer
@@ -419,8 +612,8 @@ def _detect_breakout(snapshot: MarketSnapshot, secondary: Optional[MarketSnapsho
 
     if (
         snapshot.regime in {"breakout_down", "trend_down", "reversal_down"}
-        and snapshot.current_price <= snapshot.support + snapshot.atr * 0.05
-        and snapshot.body_strength >= 0.85
+        and snapshot.current_price < snapshot.support
+        and snapshot.body_strength >= 1.1
     ):
         entry = min(snapshot.current_price, snapshot.support - breakout_buffer)
         stop = snapshot.support + stop_buffer
@@ -461,8 +654,8 @@ def _detect_pullback(snapshot: MarketSnapshot, secondary: Optional[MarketSnapsho
         snapshot.ema_slope > 0
         and snapshot.regime not in {"reversal_down", "breakout_down"}
         and controlled_wick
-        and 0.15 <= retracement <= 0.75
-        and last_close > snapshot.support
+        and 0.30 <= retracement <= 0.618
+        and last_close > max(snapshot.support, impulse_floor)
     ):
         pullback_floor = max(impulse_ceiling - impulse * 0.618, impulse_floor)
         stop = pullback_floor - snapshot.atr * style_cfg.get("stop_buffer_atr", 0.35)
@@ -591,12 +784,92 @@ def _detect_range(snapshot: MarketSnapshot, secondary: Optional[MarketSnapshot],
     return candidates
 
 
+def _detect_micro_scalp(snapshot: MarketSnapshot, secondary: Optional[MarketSnapshot], style_cfg: dict, patterns: Iterable) -> list[SetupCandidate]:
+    candidates: list[SetupCandidate] = []
+    if not style_cfg.get("micro_scalp"):
+        return candidates
+    if snapshot.timeframe != "1m":
+        return candidates
+    if snapshot.range_width < snapshot.atr * 1.1:
+        return candidates
+
+    micro_bias = snapshot.ema_slope / max(snapshot.atr, 0.01)
+    mid = (snapshot.range_high + snapshot.range_low) / 2
+    upper_lane = snapshot.range_high - snapshot.range_width * 0.18
+    lower_lane = snapshot.range_low + snapshot.range_width * 0.18
+    stop_buffer = snapshot.atr * style_cfg.get("stop_buffer_atr", 0.24)
+    previous_high = _latest_swing(snapshot.swings, "high", skip_last=1)
+    current_high = _latest_swing(snapshot.swings, "high")
+    latest_low = _latest_swing(snapshot.swings, "low")
+    failed_push_high = current_high["price"] if current_high else snapshot.recent_minor_high
+    prior_push_high = previous_high["price"] if previous_high else snapshot.prior_minor_high
+    structure_floor = latest_low["price"] if latest_low else snapshot.recent_minor_low
+    lower_high_in_play = (
+        prior_push_high - failed_push_high > snapshot.atr * 0.18
+        and snapshot.current_price <= structure_floor + snapshot.atr * 0.1
+    )
+
+    if (
+        snapshot.current_price >= mid
+        and snapshot.current_price <= upper_lane
+        and micro_bias > 0.035
+        and snapshot.close_location > 0.5
+    ):
+        candidate = _build_candidate(
+            snapshot=snapshot,
+            secondary=secondary,
+            style_cfg=style_cfg,
+            direction="BUY",
+            setup_type="micro_scalp_long",
+            regime=snapshot.regime if snapshot.regime != "neutral" else "micro_rotation_up",
+            entry_price=snapshot.current_price,
+            stop_loss=max(snapshot.current_price - snapshot.atr * 0.95, snapshot.range_low - stop_buffer),
+            structure_target=max(snapshot.range_high - snapshot.atr * 0.08, snapshot.current_price + snapshot.atr * 0.75),
+            structure_score=70.0,
+            reasoning="Short-term order flow is rotating higher inside the active minute range, offering a nearby continuation scalp.",
+            patterns=patterns,
+            context_tags=["micro_scalp", "rotation", "momentum"],
+        )
+        if candidate:
+            candidates.append(candidate)
+
+    if (
+        snapshot.current_price <= mid
+        and snapshot.current_price >= lower_lane
+        and micro_bias < -0.035
+        and snapshot.close_location < 0.5
+        and not lower_high_in_play
+    ):
+        candidate = _build_candidate(
+            snapshot=snapshot,
+            secondary=secondary,
+            style_cfg=style_cfg,
+            direction="SELL",
+            setup_type="micro_scalp_short",
+            regime=snapshot.regime if snapshot.regime != "neutral" else "micro_rotation_down",
+            entry_price=snapshot.current_price,
+            stop_loss=min(snapshot.current_price + snapshot.atr * 0.95, snapshot.range_high + stop_buffer),
+            structure_target=min(snapshot.range_low + snapshot.atr * 0.08, snapshot.current_price - snapshot.atr * 0.75),
+            structure_score=70.0,
+            reasoning="Short-term order flow is rotating lower inside the active minute range, offering a nearby continuation scalp.",
+            patterns=patterns,
+            context_tags=["micro_scalp", "rotation", "momentum"],
+        )
+        if candidate:
+            candidates.append(candidate)
+
+    return candidates
+
+
 def _detect_exhaustion(snapshot: MarketSnapshot, secondary: Optional[MarketSnapshot], style_cfg: dict, patterns: Iterable) -> list[SetupCandidate]:
     candidates: list[SetupCandidate] = []
     stop_buffer = snapshot.atr * style_cfg.get("stop_buffer_atr", 0.25)
 
     if (
-        snapshot.regime == "reversal_down"
+        (
+            snapshot.regime in {"reversal_down", "transition", "trend_up", "breakout_up"}
+            or snapshot.ema_slope > 0
+        )
         and
         snapshot.upper_wick > snapshot.avg_body * 1.6
         and snapshot.relative_volume >= 0.95
@@ -621,7 +894,10 @@ def _detect_exhaustion(snapshot: MarketSnapshot, secondary: Optional[MarketSnaps
             candidates.append(candidate)
 
     if (
-        snapshot.regime == "reversal_up"
+        (
+            snapshot.regime in {"reversal_up", "transition", "trend_down", "breakout_down"}
+            or snapshot.ema_slope < 0
+        )
         and
         snapshot.lower_wick > snapshot.avg_body * 1.6
         and snapshot.relative_volume >= 0.95
@@ -648,33 +924,202 @@ def _detect_exhaustion(snapshot: MarketSnapshot, secondary: Optional[MarketSnaps
     return candidates
 
 
+def _detect_supply_demand(snapshot: MarketSnapshot, secondary: Optional[MarketSnapshot], style_cfg: dict, patterns: Iterable) -> list[SetupCandidate]:
+    candidates: list[SetupCandidate] = []
+    if snapshot.regime in {"range", "compression", "transition", "neutral"}:
+        return candidates
+    
+    zone_tolerance = snapshot.atr * 1.5
+    stop_buffer = snapshot.atr * style_cfg.get("stop_buffer_atr", 0.35)
+    
+    lows = [s["price"] for s in snapshot.swings if s["type"] == "low"]
+    highs = [s["price"] for s in snapshot.swings if s["type"] == "high"]
+    
+    valid_demand_zones = [low for low in lows if abs(snapshot.current_price - low) <= zone_tolerance and snapshot.current_price >= low - snapshot.atr * 0.2]
+    
+    if valid_demand_zones and snapshot.regime not in {"breakout_down", "trend_down"}:
+        demand_level = min(valid_demand_zones)
+        entry = snapshot.current_price
+        stop = max(0.01, demand_level - stop_buffer)
+        
+        target = snapshot.recent_high if snapshot.recent_high > entry + snapshot.atr else entry + snapshot.atr * 2.0
+        
+        score_boost = 78.0
+        if snapshot.current_price <= demand_level + snapshot.atr * 0.3:
+            score_boost += 6.0
+        if snapshot.lower_wick >= snapshot.atr * 0.4:
+            score_boost += 8.0
+            
+        candidate = _build_candidate(
+            snapshot=snapshot,
+            secondary=secondary,
+            style_cfg=style_cfg,
+            direction="BUY",
+            setup_type="demand_zone_reaction",
+            regime="pullback" if snapshot.regime.startswith("trend") else snapshot.regime,
+            entry_price=entry,
+            stop_loss=stop,
+            structure_target=target,
+            structure_score=score_boost,
+            reasoning="Price has retraced into a historical structure demand zone. Accumulation is likely with defined risk below the structural low.",
+            patterns=patterns,
+            context_tags=["demand_zone", "structure", "accumulation"],
+        )
+        if candidate:
+            candidates.append(candidate)
+
+    valid_supply_zones = [high for high in highs if abs(snapshot.current_price - high) <= zone_tolerance and snapshot.current_price <= high + snapshot.atr * 0.2]
+    
+    if valid_supply_zones and snapshot.regime not in {"breakout_up", "trend_up"}:
+        supply_level = max(valid_supply_zones)
+        entry = snapshot.current_price
+        stop = supply_level + stop_buffer
+        
+        target = snapshot.recent_low if snapshot.recent_low < entry - snapshot.atr else max(0.01, entry - snapshot.atr * 2.0)
+        
+        score_boost = 78.0
+        if snapshot.current_price >= supply_level - snapshot.atr * 0.3:
+            score_boost += 6.0
+        if snapshot.upper_wick >= snapshot.atr * 0.4:
+            score_boost += 8.0
+            
+        candidate = _build_candidate(
+            snapshot=snapshot,
+            secondary=secondary,
+            style_cfg=style_cfg,
+            direction="SELL",
+            setup_type="supply_zone_reaction",
+            regime="pullback" if snapshot.regime.startswith("trend") else snapshot.regime,
+            entry_price=entry,
+            stop_loss=stop,
+            structure_target=target,
+            structure_score=score_boost,
+            reasoning="Price has rallied into a historical structure supply zone. Distribution is likely with defined risk above the structural high.",
+            patterns=patterns,
+            context_tags=["supply_zone", "structure", "distribution"],
+        )
+        if candidate:
+            candidates.append(candidate)
+
+    return candidates
+
+
+def _resolve_by_hierarchy(
+    candidates: list[SetupCandidate],
+    regime_hierarchy,
+    primary_atr: float,
+) -> tuple[list[SetupCandidate], list[SetupCandidate]]:
+    priority_map = {
+        setup_type: index
+        for index, setup_type in enumerate(getattr(regime_hierarchy, "allowed_detectors", []) or [])
+    }
+    resolved: list[SetupCandidate] = []
+    rejected: list[SetupCandidate] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (priority_map.get(item.setup_type, 999), -item.score),
+    ):
+        conflict = next(
+            (
+                existing
+                for existing in resolved
+                if existing.direction != candidate.direction
+                and abs(existing.entry_price - candidate.entry_price) <= max(primary_atr, 0.01) * 0.8
+            ),
+            None,
+        )
+        if conflict is None:
+            resolved.append(candidate)
+            continue
+
+        candidate_priority = priority_map.get(candidate.setup_type, 999)
+        conflict_priority = priority_map.get(conflict.setup_type, 999)
+        if candidate_priority == conflict_priority and abs(candidate.score - conflict.score) <= 2.0:
+            candidate.context_tags.append("hierarchy_conflict_tolerated")
+            resolved.append(candidate)
+            continue
+
+        penalty = 10.0
+        candidate.score = _clamp(candidate.score - penalty, 0.0, 99.0)
+        candidate.evidence["conflict_penalty"] = round(penalty, 2)
+        candidate.no_trade_reasons.append(
+            {
+                "code": "directional_conflict",
+                "message": f"Conflicts with stronger {conflict.direction} candidate near the same execution zone.",
+                "blocking": True,
+            }
+        )
+        if candidate.score >= conflict.score - 2.0:
+            resolved.append(candidate)
+        else:
+            candidate.is_rejected = True
+            rejected.append(candidate)
+    return resolved, rejected
+
+
 def detect_ranked_setups(
     *,
     snapshots: Dict[str, MarketSnapshot],
     style_cfg: dict,
     patterns_by_timeframe: Dict[str, list],
-) -> list[SetupCandidate]:
+    allowed_detectors: list[str] | None = None,
+    regime_hierarchy=None,
+) -> RankedSetupBook:
     primary = snapshots[style_cfg["timeframes"][0]]
     secondary = snapshots.get(style_cfg["timeframes"][1]) if len(style_cfg["timeframes"]) > 1 else None
     primary_patterns = patterns_by_timeframe.get(primary.timeframe, [])
     secondary_patterns = patterns_by_timeframe.get(secondary.timeframe, []) if secondary else []
     all_patterns = primary_patterns + secondary_patterns
 
-    candidates: list[SetupCandidate] = []
-    candidates.extend(_detect_breakout(primary, secondary, style_cfg, all_patterns))
-    candidates.extend(_detect_pullback(primary, secondary, style_cfg, all_patterns))
-    candidates.extend(_detect_range(primary, secondary, style_cfg, all_patterns))
-    candidates.extend(_detect_exhaustion(primary, secondary, style_cfg, all_patterns))
+    all_candidates: list[SetupCandidate] = []
+    all_candidates.extend(_detect_breakout(primary, secondary, style_cfg, all_patterns))
+    all_candidates.extend(_detect_pullback(primary, secondary, style_cfg, all_patterns))
+    all_candidates.extend(_detect_range(primary, secondary, style_cfg, all_patterns))
+    all_candidates.extend(_detect_micro_scalp(primary, secondary, style_cfg, all_patterns))
+    all_candidates.extend(_detect_exhaustion(primary, secondary, style_cfg, all_patterns))
+    all_candidates.extend(_detect_supply_demand(primary, secondary, style_cfg, all_patterns))
+
+    if allowed_detectors is not None:
+        filtered_candidates: list[SetupCandidate] = []
+        for candidate in all_candidates:
+            if candidate.setup_type in allowed_detectors:
+                filtered_candidates.append(candidate)
+                continue
+            candidate.is_rejected = True
+            candidate.no_trade_reasons.append(
+                {
+                    "code": "regime_gating_block",
+                    "message": f"{candidate.setup_type.replace('_', ' ')} is not allowed in the active regime hierarchy.",
+                    "blocking": True,
+                }
+            )
+            candidate.context_tags.append("regime_gated")
+        all_candidates = filtered_candidates + [candidate for candidate in all_candidates if candidate.is_rejected]
+
+    rejected = [candidate for candidate in all_candidates if candidate.is_rejected]
+    viable = [candidate for candidate in all_candidates if not candidate.is_rejected]
+    viable, conflict_rejections = _resolve_by_hierarchy(viable, regime_hierarchy, primary.atr)
+    rejected.extend(conflict_rejections)
 
     deduped: list[SetupCandidate] = []
     seen: set[tuple[str, str, int]] = set()
-    for candidate in sorted(candidates, key=lambda item: item.score, reverse=True):
+    for candidate in sorted(viable, key=lambda item: item.score, reverse=True):
         key = (candidate.setup_type, candidate.direction, round(candidate.entry_price / max(primary.atr, 0.01)))
         if key in seen:
+            candidate.is_rejected = True
+            candidate.no_trade_reasons.append(
+                {
+                    "code": "duplicate_execution_zone",
+                    "message": "A stronger setup already occupies this execution zone.",
+                    "blocking": True,
+                }
+            )
+            rejected.append(candidate)
             continue
         seen.add(key)
         deduped.append(candidate)
-    return deduped
+    rejected.sort(key=lambda item: item.score, reverse=True)
+    return RankedSetupBook(selected=deduped, rejected=rejected)
 
 
 def _candidate_to_signal(
@@ -708,6 +1153,8 @@ def _candidate_to_signal(
         entry_window_high=_round_price(candidate.entry_window_high),
         context_tags=candidate.context_tags,
         source=candidate.source,
+        evidence={key: round(float(value), 2) for key, value in candidate.evidence.items()},
+        no_trade_reasons=candidate.no_trade_reasons,
     )
 
 
@@ -718,17 +1165,60 @@ def build_analysis_batch(
     snapshots: Dict[str, MarketSnapshot],
     style_cfg: dict,
     patterns_by_timeframe: Dict[str, list],
+    setup_book: RankedSetupBook | None = None,
+    batch_id: str | None = None,
+    allowed_detectors: list[str] | None = None,
+    regime_hierarchy=None,
+    confidence_cap_override: float | None = None,
 ) -> AnalysisBatch:
-    batch_id = str(uuid4())
+    batch_id = batch_id or str(uuid4())
     primary_snapshot = snapshots[style_cfg["timeframes"][0]]
-    candidates = detect_ranked_setups(
+    setup_book = setup_book or detect_ranked_setups(
         snapshots=snapshots,
         style_cfg=style_cfg,
         patterns_by_timeframe=patterns_by_timeframe,
+        allowed_detectors=allowed_detectors,
+        regime_hierarchy=regime_hierarchy,
     )
+    candidates = setup_book.selected
     confidence_cap = 98.0 if primary_snapshot.is_live else 84.0
+    if confidence_cap_override is not None:
+        confidence_cap = min(confidence_cap, confidence_cap_override)
 
     if not candidates:
+        no_trade_reasons = [
+            {
+                "code": "no_candidate_survived",
+                "message": "No setup passed structure, conflict, and actionability filters.",
+                "blocking": True,
+            }
+        ]
+        if getattr(regime_hierarchy, "force_hold", False):
+            no_trade_reasons.append(
+                {
+                    "code": "regime_force_hold",
+                    "message": "Transition regime is active, so execution is forced to HOLD until structure stabilizes.",
+                    "blocking": True,
+                }
+            )
+        if not primary_snapshot.is_live:
+            no_trade_reasons.append(
+                {
+                    "code": "delayed_source",
+                    "message": "Only delayed data was available, so confidence was capped and execution stayed disabled.",
+                    "blocking": False,
+                }
+            )
+        if setup_book.rejected:
+            top_rejected = setup_book.rejected[:2]
+            no_trade_reasons.extend(
+                {
+                    "code": "rejected_candidate",
+                    "message": f"{candidate.setup_type.replace('_', ' ')} was rejected: {(candidate.no_trade_reasons[0]['message'] if candidate.no_trade_reasons else 'another setup ranked higher')}",
+                    "blocking": False,
+                }
+                for candidate in top_rejected
+            )
         primary_signal = TradeSignal(
             symbol=symbol,
             analysis_batch_id=batch_id,
@@ -749,6 +1239,19 @@ def build_analysis_batch(
             entry_window_high=_round_price(primary_snapshot.current_price),
             context_tags=primary_snapshot.notes + ["no_trade"],
             source=primary_snapshot.source,
+            evidence={
+                "regime_alignment": round(primary_snapshot.regime_confidence, 2),
+                "structure_confirmation": 0.0,
+                "actionability": 0.0,
+                "confluence": 0.0,
+                "invalidation_quality": 0.0,
+                "source_quality": 100.0 if primary_snapshot.is_live else 72.0,
+                "conflict_penalty": 0.0,
+                "pattern_boost": 0.0,
+                "rr": 0.0,
+                "proximity": 0.0,
+            },
+            no_trade_reasons=no_trade_reasons,
         )
         return AnalysisBatch(
             analysis_batch_id=batch_id,

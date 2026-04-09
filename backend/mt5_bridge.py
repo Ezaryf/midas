@@ -136,6 +136,7 @@ def init_mt5() -> bool:
 
 def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
     direction = signal.get("direction", "").upper()
+    trade_symbol = signal.get("symbol") or SYMBOL
     
     # Safely convert to float, handling None values
     try:
@@ -158,11 +159,19 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
         entry_price = float(signal.get("entry_price", 0))
         if entry_price > 0:
             lot = risk_manager.calculate_lot_size(entry_price, sl)
+            lot = risk_manager.calculate_lot_size_from_shadow_performance(
+                setup_type=signal.get("setup_type"),
+                base_lot_size=lot,
+            )
+        lot_multiplier = float(signal.get("lot_multiplier") or 1.0)
+        if signal.get("position_action") == "scale_in" and "lot_multiplier" not in signal:
+            lot_multiplier = float(os.getenv("SCALE_IN_LOT_FRACTION", "0.5"))
+        lot = round(max(risk_manager.config.min_lot_size, lot * lot_multiplier), 2)
         
         # 2. Check if we can open a position with this desired lot
         can_trade, reason = risk_manager.can_open_position(
             direction=direction, 
-            symbol=SYMBOL, 
+            symbol=trade_symbol, 
             volume=lot, 
             price=entry_price
         )
@@ -174,7 +183,7 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
                 logger.warning(f"⚠️ {reason} — Attempting fallback to minimum lot size ({min_lot})")
                 can_trade_min, min_reason = risk_manager.can_open_position(
                     direction=direction, 
-                    symbol=SYMBOL, 
+                    symbol=trade_symbol, 
                     volume=min_lot, 
                     price=entry_price
                 )
@@ -196,15 +205,16 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
 
     # Retry loop for transient errors
     for attempt in range(1, max_retries + 1):
-        tick = mt5.symbol_info_tick(SYMBOL)
+        tick = mt5.symbol_info_tick(trade_symbol)
         if tick is None:
             if attempt < max_retries:
-                logger.warning(f"No tick for {SYMBOL}, retrying... ({attempt}/{max_retries})")
+                logger.warning(f"No tick for {trade_symbol}, retrying... ({attempt}/{max_retries})")
                 import time; time.sleep(0.5)
                 continue
-            return {"status": "error", "reason": f"No tick for {SYMBOL} after {max_retries} attempts"}
+            return {"status": "error", "reason": f"No tick for {trade_symbol} after {max_retries} attempts"}
 
         price      = tick.ask if direction == "BUY" else tick.bid
+        spread     = round(float(tick.ask - tick.bid), 4)
         order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
 
         # Try filling modes in order — brokers differ (XM uses FOK or RETURN)
@@ -217,7 +227,7 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
         for filling in filling_modes:
             request = {
                 "action":       mt5.TRADE_ACTION_DEAL,
-                "symbol":       SYMBOL,
+                "symbol":       trade_symbol,
                 "volume":       lot,
                 "type":         order_type,
                 "price":        price,
@@ -236,8 +246,17 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
                 continue
 
             if result.retcode == mt5.TRADE_RETCODE_DONE:
-                logger.info(f"✅ Order placed: {direction} {lot} {SYMBOL} @ {price} | SL {sl} | TP {tp} | #{result.order}")
-                return {"status": "ok", "ticket": result.order, "price": price, "lot_size": lot}
+                logger.info(f"✅ Order placed: {direction} {lot} {trade_symbol} @ {price} | SL {sl} | TP {tp} | #{result.order}")
+                intended_entry = float(signal.get("entry_price") or price)
+                slippage_points = (price - intended_entry) if direction == "BUY" else (intended_entry - price)
+                return {
+                    "status": "ok",
+                    "ticket": result.order,
+                    "price": price,
+                    "lot_size": lot,
+                    "spread": spread,
+                    "slippage_points": slippage_points,
+                }
 
             # Unsupported filling — try next
             if result.retcode in (10030, 10038):  # INVALID_FILL
@@ -258,6 +277,111 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
             return {"status": "error", "retcode": result.retcode, "comment": result.comment}
 
     return {"status": "error", "reason": "All filling modes rejected by broker"}
+
+
+def _update_position_decision_execution(signal_id: str | None, result: dict, db=None) -> None:
+    if not signal_id or not db or not db.is_enabled():
+        return
+
+    try:
+        status = str(result.get("status") or "").lower()
+        execution_result = result.get("comment") or result.get("reason") or result.get("message") or status
+        db.update_position_decision_execution(
+            signal_id=signal_id,
+            executed=status in {"ok", "closed"},
+            execution_result=execution_result,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to update position decision execution: {exc}")
+
+
+def _close_single_position(pos, *, close_reason: str, db=None) -> dict:
+    close_request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": pos.symbol,
+        "volume": pos.volume,
+        "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+        "position": pos.ticket,
+        "magic": pos.magic,
+        "comment": f"Position manager - {close_reason}",
+    }
+
+    result = mt5.order_send(close_request)
+    if not result:
+        return {"status": "error", "reason": f"Failed to close position #{pos.ticket}: no result"}
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return {
+            "status": "error",
+            "reason": f"Failed to close position #{pos.ticket}: {result.comment}",
+            "retcode": result.retcode,
+        }
+
+    tick = mt5.symbol_info_tick(pos.symbol)
+    close_price = float(getattr(result, "price", 0.0) or 0.0)
+    if not close_price and tick:
+        close_price = float(tick.bid) if pos.type == mt5.ORDER_TYPE_BUY else float(tick.ask)
+
+    logger.info(
+        f"✅ Position closed: #{pos.ticket} {pos.symbol} | Reason: {close_reason} | Profit: ${float(getattr(result, 'profit', 0.0) or 0.0):.2f}"
+    )
+
+    if db and db.is_enabled():
+        try:
+            db.update_order_close(
+                ticket=int(pos.ticket),
+                close_price=close_price,
+                profit=float(getattr(result, "profit", getattr(pos, "profit", 0.0)) or 0.0),
+                commission=float(getattr(result, "commission", 0.0) or 0.0),
+                swap=float(getattr(pos, "swap", 0.0) or 0.0),
+                close_reason=close_reason,
+            )
+            from app.services.signal_feedback import signal_feedback_store
+
+            signal_feedback_store.record_outcome(int(pos.ticket))
+        except Exception as exc:
+            logger.error(f"Failed to persist close for #{pos.ticket}: {exc}")
+
+    return {
+        "status": "ok",
+        "ticket": int(pos.ticket),
+        "symbol": pos.symbol,
+        "close_price": close_price,
+        "profit": float(getattr(result, "profit", getattr(pos, "profit", 0.0)) or 0.0),
+    }
+
+
+def close_positions_for_symbol(symbol: str, *, close_reason: str, db=None) -> dict:
+    target_symbol = symbol or SYMBOL
+    positions = mt5.positions_get(magic=MAGIC_NUMBER) or []
+    matching_positions = [
+        pos for pos in positions if target_symbol.upper() in str(getattr(pos, "symbol", "")).upper()
+    ]
+
+    if not matching_positions:
+        return {"status": "skipped", "reason": f"No open positions for {target_symbol}"}
+
+    closed_tickets: list[int] = []
+    failures: list[str] = []
+    for pos in matching_positions:
+        close_result = _close_single_position(pos, close_reason=close_reason, db=db)
+        if close_result.get("status") == "ok":
+            closed_tickets.append(int(close_result["ticket"]))
+        else:
+            failures.append(str(close_result.get("reason") or f"Failed to close #{pos.ticket}"))
+
+    if failures:
+        return {
+            "status": "error",
+            "reason": "; ".join(failures),
+            "closed_tickets": closed_tickets,
+        }
+
+    return {
+        "status": "closed",
+        "closed_tickets": closed_tickets,
+        "message": f"Closed {len(closed_tickets)} position(s) for {target_symbol}",
+    }
 
 
 # ── WebSocket Client ──────────────────────────────────────────────────────────
@@ -341,18 +465,154 @@ async def command_receiver(ws, auto_trade: bool):
     
     async for raw in ws:
         try:
-            payload   = json.loads(raw)
-            msg_type  = payload.get("type")
+            payload = json.loads(raw)
+            msg_type = payload.get("type")
             if msg_type != "SIGNAL":
                 continue
 
-            data      = payload.get("data", {})
+            data = payload.get("data", {})
             signal_id = data.get("signal_id", "unknown")
-            direction = data.get("direction", "HOLD")
-            action    = payload.get("action")
+            direction = str(data.get("direction", "HOLD")).upper()
+            action = payload.get("action")
 
             logger.info(f"📡 Signal received [{signal_id}]: {direction} | confidence {data.get('confidence')}%")
             logger.info(f"   Entry: {data.get('entry_price')} | SL: {data.get('stop_loss')} | TP1: {data.get('take_profit_1')}")
+
+            effective_symbol = data.get("symbol") or SYMBOL
+            position_action = str(data.get("position_action") or "open").lower()
+            is_duplicate = bool(data.get("is_duplicate"))
+            logger.info(f"   Position action: {position_action}")
+
+            if action != "PLACE_ORDER":
+                continue
+
+            if not auto_trade:
+                logger.warning("   Auto-trade is OFF - restart with --auto-trade to execute orders")
+                await ws.send(json.dumps({
+                    "type": "ACK",
+                    "signal_id": signal_id,
+                    "status": "skipped",
+                    "message": "Auto-trade is disabled",
+                }))
+                continue
+
+            if is_duplicate or position_action == "ignore":
+                result = {
+                    "status": "skipped",
+                    "reason": data.get("position_action_reason") or "Signal suppressed by position manager",
+                }
+            elif position_action == "close":
+                result = close_positions_for_symbol(
+                    effective_symbol,
+                    close_reason="position_manager_close",
+                    db=db,
+                )
+            elif direction not in ("BUY", "SELL"):
+                result = {"status": "skipped", "reason": "HOLD signal"}
+            elif position_action == "reverse":
+                close_result = close_positions_for_symbol(
+                    effective_symbol,
+                    close_reason="position_manager_reverse",
+                    db=db,
+                )
+                if close_result.get("status") == "error":
+                    result = {
+                        "status": "error",
+                        "reason": close_result.get("reason") or "Reverse failed during close step",
+                        "closed_tickets": close_result.get("closed_tickets", []),
+                    }
+                else:
+                    result = place_order(data, risk_manager=risk_manager)
+                    if close_result.get("closed_tickets"):
+                        result["closed_tickets"] = close_result["closed_tickets"]
+            else:
+                result = place_order(data, risk_manager=risk_manager)
+
+            logger.info(f"   Execution result: {result}")
+
+            if result.get("status") == "blocked" and db and db.is_enabled():
+                try:
+                    db.log_risk_event(
+                        event_type="POSITION_BLOCKED",
+                        description=result.get("reason", "Unknown"),
+                        action_taken="Order rejected",
+                        metadata={
+                            "signal_id": signal_id,
+                            "direction": direction,
+                            "position_action": position_action,
+                        },
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to log risk event: {e}")
+
+            if result.get("status") == "ok" and db and db.is_enabled():
+                try:
+                    signal_context = {
+                        "analysis_batch_id": data.get("analysis_batch_id"),
+                        "setup_type": data.get("setup_type"),
+                        "trading_style": data.get("trading_style"),
+                        "market_regime": data.get("market_regime"),
+                        "regime_at_signal": data.get("market_regime"),
+                        "regime_confidence_at_signal": (data.get("evidence") or {}).get("regime_alignment"),
+                        "session_at_signal": data.get("session_label") or "off",
+                        "volatility_bucket_at_signal": data.get("volatility_bucket"),
+                        "spread_at_signal": result.get("spread"),
+                        "actual_spread": result.get("spread"),
+                        "slippage_points": result.get("slippage_points"),
+                        "intended_entry_price": float(data.get("entry_price") or 0.0),
+                        "intended_stop_loss": float(data.get("stop_loss") or 0.0),
+                        "intended_take_profit_1": float(data.get("take_profit_1") or 0.0),
+                        "data_source_at_signal": data.get("source"),
+                        "compression_ratio_at_entry": (data.get("evidence") or {}).get("compression_ratio"),
+                        "efficiency_ratio_at_entry": (data.get("evidence") or {}).get("efficiency_ratio"),
+                        "close_location_at_entry": (data.get("evidence") or {}).get("close_location"),
+                        "body_strength_at_entry": (data.get("evidence") or {}).get("body_strength"),
+                        "position_action": position_action,
+                        "position_action_reason": data.get("position_action_reason"),
+                        "calibrated_confidence": data.get("calibrated_confidence"),
+                        "confidence_source": data.get("confidence_source"),
+                    }
+                    db.save_order(
+                        signal_id=signal_id,
+                        ticket=result.get("ticket"),
+                        direction=direction,
+                        entry_price=result.get("price"),
+                        stop_loss=float(data.get("stop_loss")),
+                        take_profit=float(data.get("take_profit_1")),
+                        lot_size=result.get("lot_size", float(data.get("lot", DEFAULT_LOT))),
+                        magic_number=MAGIC_NUMBER,
+                        comment=f"Midas AI Signal [{position_action}]",
+                        symbol=effective_symbol,
+                        analysis_batch_id=data.get("analysis_batch_id"),
+                        setup_type=data.get("setup_type"),
+                        signal_context=signal_context,
+                        entry_spread=result.get("spread"),
+                        slippage_points=result.get("slippage_points"),
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save order to database: {e}")
+
+            _update_position_decision_execution(signal_id, result, db=db)
+
+            ack = {
+                "type": "ACK",
+                "signal_id": signal_id,
+                "status": result.get("status"),
+                "ticket": result.get("ticket"),
+                "price": result.get("price") or result.get("close_price"),
+                "message": result.get("comment") or result.get("reason") or result.get("message", ""),
+            }
+            await ws.send(json.dumps(ack))
+
+            if result.get("status") == "ok":
+                logger.info(f"   Order #{result.get('ticket')} placed @ {result.get('price')}")
+            elif result.get("status") == "closed":
+                logger.info(f"   {ack.get('message')}")
+            elif result.get("status") in {"blocked", "skipped"}:
+                logger.warning(f"   {ack.get('message')}")
+            else:
+                logger.error(f"   Order failed: {result}")
+            continue
 
             if action == "PLACE_ORDER":
                 if direction in ("BUY", "SELL"):
@@ -375,6 +635,27 @@ async def command_receiver(ws, auto_trade: bool):
                         # Save order to database if successful
                         if result.get("status") == "ok" and db and db.is_enabled():
                             try:
+                                signal_context = {
+                                    "analysis_batch_id": data.get("analysis_batch_id"),
+                                    "setup_type": data.get("setup_type"),
+                                    "trading_style": data.get("trading_style"),
+                                    "market_regime": data.get("market_regime"),
+                                    "regime_at_signal": data.get("market_regime"),
+                                    "regime_confidence_at_signal": (data.get("evidence") or {}).get("regime_alignment"),
+                                    "session_at_signal": data.get("session_label") or "off",
+                                    "volatility_bucket_at_signal": data.get("volatility_bucket"),
+                                    "spread_at_signal": result.get("spread"),
+                                    "actual_spread": result.get("spread"),
+                                    "slippage_points": result.get("slippage_points"),
+                                    "intended_entry_price": float(data.get("entry_price") or 0.0),
+                                    "intended_stop_loss": float(data.get("stop_loss") or 0.0),
+                                    "intended_take_profit_1": float(data.get("take_profit_1") or 0.0),
+                                    "data_source_at_signal": data.get("source"),
+                                    "compression_ratio_at_entry": (data.get("evidence") or {}).get("compression_ratio"),
+                                    "efficiency_ratio_at_entry": (data.get("evidence") or {}).get("efficiency_ratio"),
+                                    "close_location_at_entry": (data.get("evidence") or {}).get("close_location"),
+                                    "body_strength_at_entry": (data.get("evidence") or {}).get("body_strength"),
+                                }
                                 db.save_order(
                                     signal_id=signal_id,
                                     ticket=result.get("ticket"),
@@ -385,6 +666,12 @@ async def command_receiver(ws, auto_trade: bool):
                                     lot_size=result.get("lot_size", float(data.get("lot", DEFAULT_LOT))),
                                     magic_number=MAGIC_NUMBER,
                                     comment="Midas AI Signal",
+                                    symbol=data.get("symbol") or SYMBOL,
+                                    analysis_batch_id=data.get("analysis_batch_id"),
+                                    setup_type=data.get("setup_type"),
+                                    signal_context=signal_context,
+                                    entry_spread=result.get("spread"),
+                                    slippage_points=result.get("slippage_points"),
                                 )
                             except Exception as e:
                                 logger.error(f"Failed to save order to database: {e}")

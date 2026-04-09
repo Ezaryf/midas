@@ -108,6 +108,13 @@ class PositionMonitor:
     
     async def _check_all_positions(self):
         """Check all open positions and apply management rules"""
+        try:
+            from app.services.signal_feedback import signal_feedback_store
+
+            signal_feedback_store.sync_closed_orders(magic_number=self.magic_number)
+        except Exception as e:
+            logger.debug(f"Closed-order sync skipped: {e}")
+
         positions = mt5.positions_get(magic=self.magic_number)
         if not positions:
             return
@@ -356,6 +363,9 @@ class PositionMonitor:
                         swap=pos.swap,
                         close_reason=reason,
                     )
+                    from app.services.signal_feedback import signal_feedback_store
+
+                    signal_feedback_store.record_outcome(pos.ticket)
             except Exception as e:
                 logger.error(f"Failed to update database: {e}")
             

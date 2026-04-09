@@ -1,13 +1,22 @@
 import asyncio
 import logging
 import os
+from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.api.ws.mt5_handler import manager
+from app.schemas.contracts import (
+    AnalysisBatchResponse,
+    ErrorResponse,
+    ExecutionResultResponse,
+    HealthResponse,
+    RiskCheckResponse,
+)
+from app.services.application import application_service
 from app.services.forex_factory import ForexFactoryService
 from app.services.news_service import NewsService
+from app.services.runtime_state import runtime_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -16,9 +25,15 @@ ff_service = ForexFactoryService()
 news_service = NewsService()
 
 
+class GenericStatusResponse(BaseModel):
+    status: Literal["ok", "warning", "error"] = "ok"
+    message: str | None = None
+    data: dict = Field(default_factory=dict)
+
+
 class ForceGenerateRequest(BaseModel):
     price: float | None = None
-    trading_style: str = "Intraday"
+    trading_style: Literal["Scalper", "Intraday", "Swing"] = "Intraday"
     api_key: str | None = None
     ai_provider: str = "openai"
 
@@ -31,7 +46,7 @@ class ExecuteSignalRequest(BaseModel):
     take_profit_2: float
     confidence: float = 0
     reasoning: str = ""
-    trading_style: str = "Intraday"
+    trading_style: Literal["Scalper", "Intraday", "Swing"] = "Intraday"
     lot: float | None = None
 
 
@@ -48,7 +63,7 @@ class ValidateMT5Request(BaseModel):
 
 
 class SetTradingStyleRequest(BaseModel):
-    trading_style: str = "Scalper"
+    trading_style: Literal["Scalper", "Intraday", "Swing"] = "Scalper"
 
 
 class SetTargetSymbolRequest(BaseModel):
@@ -63,145 +78,93 @@ class UpdateSettingsRequest(BaseModel):
     news_blackout_minutes: int | None = None
 
 
-@router.post("/signals/force-generate")
+class RiskCheckRequest(BaseModel):
+    direction: Literal["BUY", "SELL"] = "BUY"
+    symbol: str | None = None
+    volume: float | None = None
+    price: float | None = None
+
+
+@router.post("/signals/force-generate", response_model=AnalysisBatchResponse)
 async def force_generate_signal(req: ForceGenerateRequest = ForceGenerateRequest()):
-    from app.core.loop import run_analysis_cycle
-    from app.services.trading_state import trading_state
-
-    if req.api_key:
-        os.environ["AI_API_KEY"] = req.api_key
-    if req.ai_provider:
-        os.environ["AI_PROVIDER"] = req.ai_provider
-
-    trading_state.set_trading_style(req.trading_style)
-    manager.trading_style = req.trading_style
-    batch = await run_analysis_cycle(
+    return await application_service.force_generate_signal(
         trading_style=req.trading_style,
-        symbol=trading_state.target_symbol,
+        api_key=req.api_key,
+        ai_provider=req.ai_provider,
     )
-    return batch.model_dump(mode="json")
 
 
-@router.post("/trading-style")
+@router.post("/trading-style", response_model=GenericStatusResponse)
 async def set_trading_style(req: SetTradingStyleRequest):
-    from app.services.trading_state import trading_state
-
-    valid = ["Scalper", "Intraday", "Swing"]
-    if req.trading_style not in valid:
-        return {"status": "error", "message": f"Invalid style. Must be one of: {valid}"}
-    manager.trading_style = req.trading_style
-    trading_state.set_trading_style(req.trading_style)
+    data = application_service.set_trading_style(req.trading_style)
     logger.info(f"Trading style changed to: {req.trading_style}")
-    return {"status": "ok", "trading_style": req.trading_style}
+    return GenericStatusResponse(status="ok", message="Trading style updated", data=data)
 
 
-@router.post("/target-symbol")
+@router.post("/target-symbol", response_model=GenericStatusResponse)
 async def set_target_symbol(req: SetTargetSymbolRequest):
-    from app.services.trading_state import trading_state
-
-    trading_state.set_target_symbol(req.target_symbol)
+    data = application_service.set_target_symbol(req.target_symbol)
     logger.info(f"Target symbol changed to: {req.target_symbol}")
-    return {"status": "ok", "target_symbol": req.target_symbol}
+    return GenericStatusResponse(status="ok", message="Target symbol updated", data=data)
 
 
-@router.post("/settings")
+@router.post("/settings", response_model=GenericStatusResponse)
 async def update_settings(req: UpdateSettingsRequest):
     from app.services.risk_manager import get_risk_manager
 
     changes = []
     risk_manager = get_risk_manager()
-    
+
     if req.max_concurrent_positions is not None:
         os.environ["MAX_CONCURRENT_POSITIONS"] = str(req.max_concurrent_positions)
         if risk_manager:
             risk_manager.config.max_concurrent_positions = req.max_concurrent_positions
         changes.append(f"max_concurrent_positions={req.max_concurrent_positions}")
-    
+
     if req.max_daily_trades is not None:
         os.environ["MAX_DAILY_TRADES"] = str(req.max_daily_trades)
         changes.append(f"max_daily_trades={req.max_daily_trades}")
-    
+
     if req.max_risk_percent is not None:
         os.environ["MAX_RISK_PERCENT"] = str(req.max_risk_percent)
         if risk_manager:
             risk_manager.config.max_risk_percent = req.max_risk_percent
         changes.append(f"max_risk_percent={req.max_risk_percent}")
-    
+
     if req.daily_loss_limit is not None:
         os.environ["DAILY_LOSS_LIMIT"] = str(req.daily_loss_limit)
         if risk_manager:
             risk_manager.config.daily_loss_limit = req.daily_loss_limit
         changes.append(f"daily_loss_limit={req.daily_loss_limit}")
-    
+
     if req.news_blackout_minutes is not None:
         os.environ["NEWS_BLACKOUT_MINUTES"] = str(req.news_blackout_minutes)
         if risk_manager:
             risk_manager.config.news_blackout_minutes = req.news_blackout_minutes
         changes.append(f"news_blackout_minutes={req.news_blackout_minutes}")
-    
+
     logger.info(f"Settings updated: {', '.join(changes)}")
-    return {"status": "ok", "changes": changes}
+    return GenericStatusResponse(status="ok", message="Settings updated", data={"changes": changes})
 
 
-@router.post("/signals/execute")
+@router.post("/signals/execute", response_model=ExecutionResultResponse)
 async def execute_signal(req: ExecuteSignalRequest):
-    connections = len(manager.active_connections)
-    if connections == 0:
-        return {
-            "status": "warning",
-            "message": "No MT5 bridge connected. Run: python backend/mt5_bridge.py",
-            "connections": 0,
-        }
-
     if req.stop_loss is None or req.take_profit_1 is None:
-        return {
-            "status": "error",
-            "message": "Invalid signal: stop_loss and take_profit_1 are required",
-        }
-
-    import uuid
-
-    signal_id = str(uuid.uuid4())[:8]
-    signal_data = req.model_dump()
-    signal_data["signal_id"] = signal_id
-
-    await manager.broadcast_json({"type": "SIGNAL", "action": "PLACE_ORDER", "data": signal_data})
-
-    for _ in range(50):
-        await asyncio.sleep(0.1)
-        ack = manager.get_ack(signal_id)
-        if ack:
-            if ack.get("status") == "ok":
-                return {
-                    "status": "ok",
-                    "message": f"Order #{ack.get('ticket')} placed @ {ack.get('price')}",
-                    "ticket": ack.get("ticket"),
-                    "price": ack.get("price"),
-                }
-            return {
-                "status": "error",
-                "message": ack.get("message", "Order failed"),
-                "details": ack,
-            }
-
-    return {
-        "status": "warning",
-        "message": f"Signal sent to {connections} bridge(s) but no confirmation received",
-        "connections": connections,
-    }
+        return ExecutionResultResponse(status="error", message="Invalid signal: stop_loss and take_profit_1 are required")
+    return await application_service.execute_signal(req.model_dump())
 
 
-@router.get("/calendar")
+@router.get("/calendar", response_model=dict)
 def get_calendar():
     return {"events": ff_service.get_weekly_events()}
 
 
-@router.get("/news")
+@router.get("/news", response_model=dict)
 async def get_news():
     return {"items": await news_service.get_gold_news()}
 
 
-@router.post("/ai/validate")
+@router.post("/ai/validate", response_model=GenericStatusResponse | ErrorResponse)
 async def validate_api_key(req: ValidateKeyRequest):
     from app.services.ai_engine import AITradingEngine
 
@@ -213,17 +176,17 @@ async def validate_api_key(req: ValidateKeyRequest):
             max_tokens=5,
         )
         reply = response.choices[0].message.content or ""
-        return {"status": "ok", "model": engine.model, "reply": reply.strip()}
+        return GenericStatusResponse(status="ok", message="API key validated", data={"model": engine.model, "reply": reply.strip()})
     except Exception as exc:
-        return {"status": "error", "message": str(exc)}
+        return ErrorResponse(message=str(exc))
 
 
-@router.post("/mt5/validate")
+@router.post("/mt5/validate", response_model=dict | ErrorResponse)
 async def validate_mt5(req: ValidateMT5Request):
     try:
         import MetaTrader5 as mt5
     except ImportError:
-        return {"status": "error", "message": "MetaTrader5 not installed. Run: pip install MetaTrader5"}
+        return ErrorResponse(message="MetaTrader5 not installed. Run: pip install MetaTrader5")
 
     def _test():
         if not mt5.initialize():
@@ -265,67 +228,42 @@ async def validate_mt5(req: ValidateMT5Request):
     return await loop.run_in_executor(None, _test)
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthResponse | ErrorResponse)
 def health():
     try:
-        from app.services.database import db
-
-        bridge_connected = len(manager.active_connections) > 0
-        latest_price = manager.latest_tick.get("bid") if isinstance(manager.latest_tick, dict) else None
-        return {
-            "status": "ok",
-            "mt5_connected": bridge_connected,
-            "bridge_count": len(manager.active_connections),
-            "latest_price": latest_price,
-            "pending_signals": len(manager._pending_signals),
-            "database_enabled": db.is_enabled(),
-            "message": "Bridge connected" if bridge_connected else "No bridge - run: python backend/mt5_bridge.py --auto-trade",
-        }
+        return application_service.health()
     except Exception as exc:
         logger.error(f"Health check error: {exc}")
-        return {"status": "error", "message": str(exc)}
+        return ErrorResponse(message=str(exc))
 
 
-@router.get("/account")
+@router.get("/account", response_model=dict)
 def get_account():
-    tick = manager.latest_tick
-    if not tick:
-        return {"connected": False}
-    return {"connected": True, **tick}
+    return application_service.account()
 
 
-@router.get("/history/signals")
+@router.get("/history/signals", response_model=dict)
 async def get_signal_history(limit: int = 50):
-    from app.services.database import db
-
-    return {"signals": db.get_recent_signals(limit=limit)}
+    return application_service.signal_history(limit=limit)
 
 
-@router.get("/history/orders")
+@router.get("/history/orders", response_model=dict)
 async def get_order_history(status: str = "all", limit: int = 50):
-    from app.services.database import db
-
-    if status == "open":
-        return {"orders": db.get_open_orders()}
-    return {"orders": []}
+    _ = limit
+    return application_service.order_history(status=status)
 
 
-@router.get("/analytics/performance")
+@router.get("/analytics/performance", response_model=dict)
 async def get_performance(period: str = "ALL_TIME"):
-    from app.services.database import db
-
-    db.calculate_performance_metrics(period=period)
-    return {"metrics": db.get_performance_metrics(period=period)}
+    return application_service.performance(period=period)
 
 
-@router.get("/analytics/equity-curve")
+@router.get("/analytics/equity-curve", response_model=dict)
 async def get_equity_curve(days: int = 30):
-    from app.services.database import db
-
-    return {"data": db.get_equity_curve(days=days)}
+    return application_service.equity_curve(days=days)
 
 
-@router.get("/risk/status")
+@router.get("/risk/status", response_model=dict)
 def get_risk_status():
     from app.services.risk_manager import get_risk_manager
 
@@ -335,19 +273,17 @@ def get_risk_status():
     return risk_manager.get_risk_summary()
 
 
-@router.post("/risk/check")
-async def check_risk(direction: str = "BUY"):
-    from app.services.risk_manager import get_risk_manager
-
-    risk_manager = get_risk_manager()
-    if not risk_manager:
-        return {"allowed": False, "reason": "Risk manager not available"}
-
-    can_trade, reason = risk_manager.can_open_position(direction)
-    return {"allowed": can_trade, "reason": reason}
+@router.post("/risk/check", response_model=RiskCheckResponse)
+async def check_risk(req: RiskCheckRequest = RiskCheckRequest()):
+    return application_service.risk_check(
+        direction=req.direction,
+        symbol=req.symbol,
+        volume=req.volume,
+        price=req.price,
+    )
 
 
-@router.post("/risk/force-close-all")
+@router.post("/risk/force-close-all", response_model=dict)
 async def force_close_all_positions():
     import MetaTrader5 as mt5
     from app.services.database import db
@@ -390,7 +326,7 @@ async def force_close_all_positions():
     return {"message": f"Closed {closed_count} positions", "closed": closed_count}
 
 
-@router.get("/positions/monitor/status")
+@router.get("/positions/monitor/status", response_model=dict)
 def get_position_monitor_status():
     from app.services.position_monitor import get_position_monitor
 
@@ -400,7 +336,7 @@ def get_position_monitor_status():
     return monitor.get_status()
 
 
-@router.get("/positions/open")
+@router.get("/positions/open", response_model=dict)
 def get_open_positions():
     import MetaTrader5 as mt5
     from app.services.risk_manager import get_risk_manager
@@ -431,7 +367,7 @@ def get_open_positions():
     return {"positions": payload}
 
 
-@router.post("/positions/{ticket}/close")
+@router.post("/positions/{ticket}/close", response_model=dict)
 async def close_position_manual(ticket: int):
     from app.services.position_monitor import get_position_monitor
 
@@ -441,7 +377,7 @@ async def close_position_manual(ticket: int):
     return monitor.close_position_manual(ticket)
 
 
-@router.post("/positions/{ticket}/modify")
+@router.post("/positions/{ticket}/modify", response_model=dict)
 async def modify_position_manual(ticket: int, sl: float, tp: float):
     from app.services.position_monitor import get_position_monitor
 

@@ -1,86 +1,75 @@
 """
-Real technical analysis using pandas-ta.
+Technical analysis service with a pluggable indicator engine.
 Fetches OHLCV data from Yahoo Finance and computes indicators.
-Supports multiple symbols via configurable Yahoo tickers.
 """
 import logging
 import requests
 import pandas as pd
-import pandas_ta as ta
+
+from app.services.indicator_engine import compute_indicators as compute_indicator_set
+from app.services.indicator_engine import get_indicator_engine
 
 logger = logging.getLogger(__name__)
 
-# Symbol → Yahoo Finance ticker mapping
 SYMBOL_TICKERS = {
-    "XAUUSD": "GC%3DF",       # Gold Futures
-    "XAGUSD": "SI%3DF",       # Silver Futures
-    "EURUSD": "EURUSD%3DX",   # EUR/USD
-    "GBPUSD": "GBPUSD%3DX",   # GBP/USD
-    "USDJPY": "JPY%3DX",      # USD/JPY
-    "BTCUSD": "BTC-USD",      # Bitcoin
+    "XAUUSD": "GC%3DF",
+    "XAGUSD": "SI%3DF",
+    "EURUSD": "EURUSD%3DX",
+    "GBPUSD": "GBPUSD%3DX",
+    "USDJPY": "JPY%3DX",
+    "BTCUSD": "BTC-USD",
 }
 
 YAHOO_BASE = "https://query2.finance.yahoo.com/v8/finance/chart/"
-HEADERS    = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
 def _get_yahoo_url(symbol: str = "XAUUSD") -> str:
-    """Resolve symbol to Yahoo Finance URL."""
     ticker = SYMBOL_TICKERS.get(symbol.upper(), "GC%3DF")
     return f"{YAHOO_BASE}{ticker}"
 
 
 def fetch_ohlcv(interval: str = "15m", range_: str = "5d", symbol: str = "XAUUSD") -> pd.DataFrame | None:
-    """Fetch OHLCV data from Yahoo Finance for any supported symbol."""
     try:
         url = _get_yahoo_url(symbol)
-        r = requests.get(
+        response = requests.get(
             url,
             params={"interval": interval, "range": range_},
             headers=HEADERS,
             timeout=10,
         )
-        r.raise_for_status()
-        result = r.json()["chart"]["result"][0]
+        response.raise_for_status()
+        result = response.json()["chart"]["result"][0]
         timestamps = result["timestamp"]
-        q = result["indicators"]["quote"][0]
+        quote = result["indicators"]["quote"][0]
 
         df = pd.DataFrame({
-            "time":   pd.to_datetime(timestamps, unit="s", utc=True),
-            "open":   q["open"],
-            "high":   q["high"],
-            "low":    q["low"],
-            "close":  q["close"],
-            "volume": q.get("volume", [0] * len(timestamps)),
+            "time": pd.to_datetime(timestamps, unit="s", utc=True),
+            "open": quote["open"],
+            "high": quote["high"],
+            "low": quote["low"],
+            "close": quote["close"],
+            "volume": quote.get("volume", [0] * len(timestamps)),
         }).dropna(subset=["open", "close"])
 
         df.set_index("time", inplace=True)
         return df
-
-    except Exception as e:
-        logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+    except Exception as exc:
+        logger.error(f"Failed to fetch OHLCV for {symbol}: {exc}")
         return None
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute EMA, RSI, MACD, ATR on a DataFrame with open/high/low/close/volume."""
-    df = df.copy()
-    df.ta.ema(length=9,   append=True)
-    df.ta.ema(length=21,  append=True)
-    df.ta.ema(length=50,  append=True)
-    df.ta.ema(length=200, append=True)
-    df.ta.rsi(length=14,  append=True)
-    df.ta.macd(fast=12, slow=26, signal=9, append=True)
-    df.ta.atr(length=14,  append=True)
-    return df
+    enriched = compute_indicator_set(df)
+    enriched.attrs["indicator_engine"] = get_indicator_engine()
+    return enriched
 
 
 def analyze_trend(df: pd.DataFrame) -> str:
-    """Returns BULLISH, BEARISH, or NEUTRAL based on EMA stack."""
     if len(df) < 50:
         return "NEUTRAL"
     latest = df.iloc[-1]
-    e9  = latest.get("EMA_9")
+    e9 = latest.get("EMA_9")
     e21 = latest.get("EMA_21")
     e50 = latest.get("EMA_50")
     if None in (e9, e21, e50):
@@ -93,34 +82,32 @@ def analyze_trend(df: pd.DataFrame) -> str:
 
 
 def get_latest_indicators(interval: str = "15m", symbol: str = "XAUUSD") -> dict:
-    """
-    Fetches real OHLCV data and returns the latest indicator values.
-    Falls back to safe defaults if data is unavailable.
-    """
     df = fetch_ohlcv(interval=interval, range_="5d", symbol=symbol)
     if df is None or len(df) < 30:
-        logger.warning(f"Insufficient OHLCV data for {symbol} — using fallback indicators.")
+        logger.warning(f"Insufficient OHLCV data for {symbol} - using fallback indicators.")
         return {
-            "RSI_14":       50.0,
+            "RSI_14": 50.0,
             "MACD_12_26_9": 0.0,
-            "ATRr_14":      12.0,
-            "trend":        "NEUTRAL",
+            "ATRr_14": 12.0,
+            "trend": "NEUTRAL",
             "current_price": 4750.0,
-            "symbol":       symbol,
+            "symbol": symbol,
+            "indicator_engine": get_indicator_engine(),
         }
 
     df = compute_indicators(df)
     latest = df.iloc[-1]
-    trend  = analyze_trend(df)
+    trend = analyze_trend(df)
 
     return {
-        "RSI_14":        round(float(latest.get("RSI_14", 50)),    2),
-        "MACD_12_26_9":  round(float(latest.get("MACDh_12_26_9", 0)), 4),
-        "ATRr_14":       round(float(latest.get("ATRr_14", 12)),   2),
-        "EMA_9":         round(float(latest.get("EMA_9",  0)),     2),
-        "EMA_21":        round(float(latest.get("EMA_21", 0)),     2),
-        "EMA_50":        round(float(latest.get("EMA_50", 0)),     2),
-        "trend":         trend,
-        "current_price": round(float(latest["close"]),             2),
-        "symbol":        symbol,
+        "RSI_14": round(float(latest.get("RSI_14", 50)), 2),
+        "MACD_12_26_9": round(float(latest.get("MACDh_12_26_9", 0)), 4),
+        "ATRr_14": round(float(latest.get("ATRr_14", 12)), 2),
+        "EMA_9": round(float(latest.get("EMA_9", 0)), 2),
+        "EMA_21": round(float(latest.get("EMA_21", 0)), 2),
+        "EMA_50": round(float(latest.get("EMA_50", 0)), 2),
+        "trend": trend,
+        "current_price": round(float(latest["close"]), 2),
+        "symbol": symbol,
+        "indicator_engine": df.attrs.get("indicator_engine", get_indicator_engine()),
     }
