@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model Signal {
+  id               String    @id @default(uuid()) @db.VarChar(36)
+  createdAt        DateTime  @default(now()) @map("created_at")
+  direction        String    @db.VarChar(10)
+  symbol           String?   @db.VarChar(20)
+  analysisBatchId  String?   @map("analysis_batch_id") @db.VarChar(64)
+  entryPrice       Decimal   @map("entry_price") @db.Decimal(12, 4)
+  stopLoss         Decimal   @map("stop_loss") @db.Decimal(12, 4)
+  takeProfit1      Decimal   @map("take_profit_1") @db.Decimal(12, 4)
+  takeProfit2      Decimal   @map("take_profit_2") @db.Decimal(12, 4)
+  confidence       Decimal   @db.Decimal(5, 2)
+  reasoning        String    @db.Text
+  tradingStyle     String    @map("trading_style") @db.VarChar(20)
+  setupType        String?   @map("setup_type") @db.VarChar(50)
+  marketRegime     String?   @map("market_regime") @db.VarChar(50)
+  score            Decimal?  @db.Decimal(5, 2)
+  rank             Int?
+  isPrimary        Boolean?  @map("is_primary")
+  entryWindowLow   Decimal?  @map("entry_window_low") @db.Decimal(12, 4)
+  entryWindowHigh  Decimal?  @map("entry_window_high") @db.Decimal(12, 4)
+  contextTags      Json?     @map("context_tags")
+  source           String?   @db.VarChar(50)
+  status           String?   @db.VarChar(20)
+  outcome          Decimal?  @db.Decimal(12, 4)
+  indicators       Json?
+  context          Json?
+  currentPrice     Decimal?  @map("current_price") @db.Decimal(12, 4)
+  trend            String?   @db.VarChar(20)
+  aiProvider       String?   @map("ai_provider") @db.VarChar(30)
+  aiModel          String?   @map("ai_model") @db.VarChar(50)
+
+  @@map("signals")
+}
+
+model Order {
+  id            String    @id @default(uuid()) @db.VarChar(36)
+  signalId      String?   @map("signal_id") @db.VarChar(36)
+  ticket        Int
+  direction     String    @db.VarChar(10)
+  entryPrice    Decimal   @map("entry_price") @db.Decimal(12, 4)
+  stopLoss      Decimal   @map("stop_loss") @db.Decimal(12, 4)
+  takeProfit    Decimal   @map("take_profit") @db.Decimal(12, 4)
+  lotSize       Decimal   @map("lot_size") @db.Decimal(8, 4)
+  magicNumber   Int       @map("magic_number")
+  comment       String?   @db.VarChar(255)
+  status        String    @default("OPEN") @db.VarChar(20)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  closedAt      DateTime? @map("closed_at")
+  closePrice    Decimal?  @map("close_price") @db.Decimal(12, 4)
+  profit        Decimal?  @db.Decimal(12, 4)
+  commission    Decimal?  @db.Decimal(12, 4)
+  swap          Decimal?  @db.Decimal(12, 4)
+  closeReason   String?   @map("close_reason") @db.VarChar(50)
+
+  @@map("orders")
+}
+
+model AccountSnapshot {
+  id              String   @id @default(uuid()) @db.VarChar(36)
+  createdAt       DateTime @default(now()) @map("created_at")
+  balance         Decimal  @db.Decimal(14, 2)
+  equity          Decimal  @db.Decimal(14, 2)
+  margin          Decimal  @db.Decimal(14, 2)
+  freeMargin      Decimal  @map("free_margin") @db.Decimal(14, 2)
+  marginLevel     Decimal  @map("margin_level") @db.Decimal(10, 2)
+  openPositions   Int      @map("open_positions")
+  pendingOrders   Int      @map("pending_orders")
+  dailyProfit     Decimal  @map("daily_profit") @db.Decimal(14, 2)
+  dailyTrades     Int      @map("daily_trades")
+
+  @@map("account_snapshots")
+}
+
+model PerformanceMetric {
+  id              String   @id @default(uuid()) @db.VarChar(36)
+  period          String   @db.VarChar(20)
+  periodStart     DateTime @map("period_start")
+  periodEnd       DateTime @map("period_end")
+  totalTrades     Int      @map("total_trades")
+  winningTrades   Int      @map("winning_trades")
+  losingTrades    Int      @map("losing_trades")
+  breakEvenTrades Int      @map("break_even_trades")
+  winRate         Decimal  @map("win_rate") @db.Decimal(5, 2)
+  totalProfit     Decimal  @map("total_profit") @db.Decimal(14, 2)
+  totalLoss       Decimal  @map("total_loss") @db.Decimal(14, 2)
+  netProfit       Decimal  @map("net_profit") @db.Decimal(14, 2)
+  profitFactor    Decimal  @map("profit_factor") @db.Decimal(8, 2)
+  avgWin          Decimal  @map("avg_win") @db.Decimal(14, 2)
+  avgLoss         Decimal  @map("avg_loss") @db.Decimal(14, 2)
+  largestWin      Decimal  @map("largest_win") @db.Decimal(14, 2)
+  largestLoss     Decimal  @map("largest_loss") @db.Decimal(14, 2)
+
+  @@unique([period, periodStart])
+  @@map("performance_metrics")
+}
+
+model RiskEvent {
+  id          String   @id @default(uuid()) @db.VarChar(36)
+  createdAt   DateTime @default(now()) @map("created_at")
+  eventType   String   @map("event_type") @db.VarChar(50)
+  description String   @db.Text
+  actionTaken String   @map("action_taken") @db.Text
+  metadata    Json?
+
+  @@map("risk_events")
+}
