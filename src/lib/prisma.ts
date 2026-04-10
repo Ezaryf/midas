@@ -1,54 +1,31 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
-import * as mariadb from "mariadb";
 
 declare global {
-  var __midasPrisma__: unknown;
+  var __midasPrisma__: PrismaClient | undefined;
 }
 
-type PrismaLike = {
-  $queryRaw: (...args: unknown[]) => Promise<unknown>;
-  $queryRawUnsafe: (query: string, ...values: unknown[]) => Promise<unknown>;
-  $executeRaw: (...args: unknown[]) => Promise<unknown>;
-  $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<unknown>;
-};
-
-export function getPrismaClient(): PrismaLike | null {
+export function getPrismaClient(): PrismaClient {
   if (!process.env.DATABASE_URL) {
-    return null;
+    throw new Error("DATABASE_URL is not set");
   }
 
   if (!global.__midasPrisma__) {
-    console.log("[Prisma] Initializing new MariaDB adapter client...");
-    // Ensure we use the mariadb:// protocol and 127.0.0.1 for local connections
-    let rawUrl = process.env.DATABASE_URL;
-    if (rawUrl.startsWith("mysql://")) {
-      rawUrl = "mariadb://" + rawUrl.substring(8);
+    console.log("[Prisma] Initializing Prisma 7 MariaDB Adapter client...");
+    
+    // Ensure we use native rust resolution, converting localhost to local IP to bypass potential named pipe delays
+    let databaseUrl = process.env.DATABASE_URL;
+    if (databaseUrl.startsWith("mysql://")) {
+      databaseUrl = "mariadb://" + databaseUrl.substring(8);
     }
-    rawUrl = rawUrl.replace("@localhost", "@127.0.0.1");
+    
+    // Use TCP stack explicitly
+    if (databaseUrl.includes("@localhost")) {
+      databaseUrl = databaseUrl.replace("@localhost", "@127.0.0.1");
+    }
 
-    const match = rawUrl.match(
-      /mariadb:\/\/(.+?):(.*)@([^@:]+):(\d+)\/(.+)/
-    );
-    
-    let config: any;
-    if (match) {
-      config = {
-        user: match[1],
-        password: match[2],
-        host: match[3],
-        port: parseInt(match[4], 10),
-        database: match[5],
-        connectionLimit: 10,
-        acquireTimeout: 30000, // 30 seconds
-        connectTimeout: 10000, // 10 seconds
-      };
-    } else {
-      config = rawUrl;
-    }
-    
-    // The adapter expects PoolConfig, not an initialized Pool.
-    const adapter = new PrismaMariaDb(config);
+    // The adapter accepts the raw string and decodes the native URL (fixes %40 passwords)
+    const adapter = new PrismaMariaDb(databaseUrl);
 
     global.__midasPrisma__ = new PrismaClient({
       adapter,
@@ -56,5 +33,8 @@ export function getPrismaClient(): PrismaLike | null {
     });
   }
 
-  return global.__midasPrisma__ as PrismaLike;
+  return global.__midasPrisma__;
 }
+
+// Export a default instance for convenience
+export const prisma = getPrismaClient();

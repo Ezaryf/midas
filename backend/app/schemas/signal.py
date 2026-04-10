@@ -137,6 +137,10 @@ class TradeSignal(BaseModel):
     )
 
     # ── Position-Aware Decision Fields ────────────────────────────────────────
+    execution_mode: Literal["normal", "forced"] = Field(default="normal")
+    forced_from_hold: bool = Field(default=False)
+    bypassed_blockers: list[str] = Field(default_factory=list)
+    source_candidate_stage: Literal["filtered", "raw"] = Field(default="filtered")
     position_action: str | None = Field(
         default=None,
         description="Action decided by the PositionManager: open/close/reverse/reduce/ignore/scale_in.",

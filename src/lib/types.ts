@@ -26,6 +26,10 @@ export interface TradeSignal {
   context_tags?: string[];
   source?: string;
   auto_execute?: boolean;
+  execution_mode?: "normal" | "forced";
+  forced_from_hold?: boolean;
+  bypassed_blockers?: string[];
+  source_candidate_stage?: "filtered" | "raw";
   // UI-only status (not from backend)
   status?: "PENDING" | "ACTIVE" | "HIT_TP1" | "HIT_TP2" | "STOPPED" | "EXPIRED";
   outcome?: number;
@@ -268,6 +272,19 @@ export interface MidasConfig {
   maxConcurrentSignals: number;
   maxConcurrentPositions: number;
   enableKillSwitch: boolean;
+  minLotSize: number;
+  maxLotSize: number;
+  minStopDistancePoints: number;
+  partialCloseEnabled: boolean;
+  partialClosePercent: number;
+  breakevenEnabled: boolean;
+  breakevenBufferPips: number;
+  trailingStopEnabled: boolean;
+  trailingStopDistancePips: number;
+  trailingStopStepPips: number;
+  timeExitEnabled: boolean;
+  exitBeforeNewsMinutes: number;
+  exitBeforeWeekendHours: number;
 }
 
 export const DEFAULT_CONFIG: MidasConfig = {
@@ -281,11 +298,24 @@ export const DEFAULT_CONFIG: MidasConfig = {
   maxRiskPercent: 1.0,
   dailyLossLimit: 500,
   newsBlackoutMinutes: 30,
-  autoExecuteConfidence: 75,
+  autoExecuteConfidence: 10,
   maxDailyTrades: 10,
   analysisIntervalSeconds: 10,
   positionCooldownSeconds: 30,
   maxConcurrentSignals: 3,
   maxConcurrentPositions: 3,
   enableKillSwitch: true,
+  minLotSize: 0.01,
+  maxLotSize: 1.0,
+  minStopDistancePoints: 30,
+  partialCloseEnabled: true,
+  partialClosePercent: 50,
+  breakevenEnabled: true,
+  breakevenBufferPips: 5,
+  trailingStopEnabled: true,
+  trailingStopDistancePips: 50,
+  trailingStopStepPips: 10,
+  timeExitEnabled: true,
+  exitBeforeNewsMinutes: 15,
+  exitBeforeWeekendHours: 2,
 };

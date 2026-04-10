@@ -85,7 +85,9 @@ export async function getPerformance(): Promise<PerformanceStats> {
         SUM(CASE WHEN outcome < 0 THEN 1 ELSE 0 END) as losses,
         SUM(CASE WHEN outcome > 0 THEN outcome ELSE 0 END) as gross_profit,
         SUM(CASE WHEN outcome < 0 THEN ABS(outcome) ELSE 0 END) as gross_loss,
-        SUM(COALESCE(outcome, 0)) as total_pnl
+        SUM(COALESCE(outcome, 0)) as total_pnl,
+        SUM(CASE WHEN DATE(created_at) = CURDATE() THEN COALESCE(outcome, 0) ELSE 0 END) as today_pnl,
+        SUM(CASE WHEN created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) THEN COALESCE(outcome, 0) ELSE 0 END) as week_pnl
       FROM signals
       WHERE status IN ('HIT_TP1', 'HIT_TP2', 'STOPPED')`,
     ) as Record<string, unknown>[];
@@ -107,8 +109,8 @@ export async function getPerformance(): Promise<PerformanceStats> {
       grossProfit: gp,
       grossLoss: gl,
       totalPnl: Number(row.total_pnl ?? 0),
-      todayPnl: 0,
-      weekPnl: 0,
+      todayPnl: Number(row.today_pnl ?? 0),
+      weekPnl: Number(row.week_pnl ?? 0),
       profitFactor: gl > 0 ? Number((gp / gl).toFixed(2)) : gp > 0 ? 999 : 0,
     };
   } catch (e) {

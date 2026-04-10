@@ -103,7 +103,7 @@ class RiskCheckResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok", "degraded", "error"]
+    status: Literal["ok", "degraded", "disconnected", "error"]
     mt5_connected: bool
     bridge_count: int
     latest_price: float | None = None
