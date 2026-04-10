@@ -229,6 +229,27 @@ export function adaptMockSignal(s: {
   };
 }
 
+export interface NewsItem {
+  id: string;
+  title: string;
+  source: string;
+  sentiment: "bullish" | "bearish" | "neutral";
+  impact: "high" | "medium" | "low";
+  publishedAt: Date;
+  summary: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  country: string;
+  impact: "high" | "medium" | "low";
+  forecast: string;
+  previous: string;
+  actual?: string;
+  scheduledAt: Date;
+}
+
 export interface MidasConfig {
   mt5Account: string;
   mt5Server: string;
@@ -240,8 +261,13 @@ export interface MidasConfig {
   maxRiskPercent: number;
   dailyLossLimit: number;
   newsBlackoutMinutes: number;
+  autoExecuteConfidence: number;
+  maxDailyTrades: number;
+  analysisIntervalSeconds: number;
+  positionCooldownSeconds: number;
   maxConcurrentSignals: number;
   maxConcurrentPositions: number;
+  enableKillSwitch: boolean;
 }
 
 export const DEFAULT_CONFIG: MidasConfig = {
@@ -255,6 +281,11 @@ export const DEFAULT_CONFIG: MidasConfig = {
   maxRiskPercent: 1.0,
   dailyLossLimit: 500,
   newsBlackoutMinutes: 30,
+  autoExecuteConfidence: 75,
+  maxDailyTrades: 10,
+  analysisIntervalSeconds: 10,
+  positionCooldownSeconds: 30,
   maxConcurrentSignals: 3,
   maxConcurrentPositions: 3,
+  enableKillSwitch: true,
 };

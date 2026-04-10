@@ -2,15 +2,16 @@ import { z } from "zod";
 import type {
   AnalysisBatch,
   AnalysisContextSummary,
+  CalendarEvent,
   CandidateInsight,
   DecisionGateStatus,
   EngineInsight,
   MarketPhaseSummary,
   MidasConfig,
+  NewsItem,
   PatternInsight,
   TradeSignal,
 } from "@/lib/types";
-import type { CalendarEvent, NewsItem } from "@/lib/mock-data";
 import type { Position } from "@/hooks/usePositions";
 import type { PerformanceStats } from "@/hooks/usePerformance";
 
@@ -266,6 +267,11 @@ export const persistedConfigSchema: z.ZodType<MidasConfig> = z.object({
   maxRiskPercent: z.number(),
   dailyLossLimit: z.number(),
   newsBlackoutMinutes: z.number(),
+  autoExecuteConfidence: z.number(),
+  maxDailyTrades: z.number(),
+  analysisIntervalSeconds: z.number(),
+  positionCooldownSeconds: z.number(),
   maxConcurrentSignals: z.number(),
   maxConcurrentPositions: z.number(),
+  enableKillSwitch: z.boolean(),
 });

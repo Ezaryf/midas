@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import type { NewsItem } from "@/lib/mock-data";
+import type { NewsItem } from "@/lib/types";
 import { fetchWithSchema } from "@/lib/http";
 import { newsResponseSchema } from "@/lib/schemas/api";
 

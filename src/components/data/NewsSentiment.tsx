@@ -1,6 +1,6 @@
 "use client";
 
-import type { NewsItem } from "@/lib/mock-data";
+import type { NewsItem } from "@/lib/types";
 import { TrendingUp, TrendingDown, Minus, ExternalLink } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
 

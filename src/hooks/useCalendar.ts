@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import type { CalendarEvent } from "@/lib/mock-data";
+import type { CalendarEvent } from "@/lib/types";
 import { fetchWithSchema } from "@/lib/http";
 import { calendarResponseSchema } from "@/lib/schemas/api";
 
