@@ -34,6 +34,7 @@ class PositionAction(str, Enum):
     REDUCE = "reduce"
     IGNORE = "ignore"
     SCALE_IN = "scale_in"
+    COUNTER_ADD = "counter_add"
 
 
 @dataclass
@@ -70,25 +71,52 @@ class PositionManagerConfig:
     cooldown_seconds: int = 30
 
     # Reversal thresholds
-    reverse_high_confidence: float = 85.0
-    reverse_medium_confidence: float = 70.0
+    reverse_high_confidence: float = 78.0
+    reverse_medium_confidence: float = 62.0
     reverse_loss_threshold_dollars: float = 50.0
 
     # Scale-in thresholds
-    scale_in_confidence: float = 90.0
+    scale_in_confidence: float = 82.0
     scale_in_lot_fraction: float = 0.5  # 50% of original lot
 
+    # Counter entry thresholds (bidirectional scalping)
+    counter_entry_enabled: bool = True
+    counter_entry_confidence: float = 75.0
+    counter_pullback_pips: float = 10.0
+    counter_lot_multiplier: float = 0.5  # 50% of original lot
+
     @classmethod
-    def from_env(cls) -> PositionManagerConfig:
+    def from_db(cls, account_id: str = "default") -> PositionManagerConfig:
+        from app.services.database import db
+        db_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
+
+        def _get(key, env_key, default, type_func=float):
+            if key in db_settings:
+                return type_func(db_settings[key])
+            return type_func(os.getenv(env_key, default))
+
+        def _get_bool(key, env_key, default):
+            if key in db_settings:
+                return bool(db_settings[key])
+            return os.getenv(env_key, str(default).lower()) == "true"
+
         return cls(
-            enabled=os.getenv("ENABLE_POSITION_MANAGER", "true").lower() == "true",
-            cooldown_seconds=int(os.getenv("POSITION_COOLDOWN_SECONDS", "30")),
-            reverse_high_confidence=float(os.getenv("REVERSE_HIGH_CONFIDENCE", "85.0")),
-            reverse_medium_confidence=float(os.getenv("REVERSE_MEDIUM_CONFIDENCE", "70.0")),
-            reverse_loss_threshold_dollars=float(os.getenv("REVERSE_LOSS_THRESHOLD", "50.0")),
-            scale_in_confidence=float(os.getenv("SCALE_IN_CONFIDENCE", "90.0")),
-            scale_in_lot_fraction=float(os.getenv("SCALE_IN_LOT_FRACTION", "0.5")),
+            enabled=_get_bool("enable_position_manager", "ENABLE_POSITION_MANAGER", True),
+            cooldown_seconds=_get("position_cooldown_seconds", "POSITION_COOLDOWN_SECONDS", 30, int),
+            reverse_high_confidence=_get("reverse_high_confidence", "REVERSE_HIGH_CONFIDENCE", 78.0, float),
+            reverse_medium_confidence=_get("reverse_medium_confidence", "REVERSE_MEDIUM_CONFIDENCE", 62.0, float),
+            reverse_loss_threshold_dollars=_get("reverse_loss_threshold", "REVERSE_LOSS_THRESHOLD", 50.0, float),
+            scale_in_confidence=_get("scale_in_confidence", "SCALE_IN_CONFIDENCE", 82.0, float),
+            scale_in_lot_fraction=_get("scale_in_lot_fraction", "SCALE_IN_LOT_FRACTION", 0.5, float),
+            counter_entry_enabled=_get_bool("counter_entry_enabled", "COUNTER_ENTRY_ENABLED", True),
+            counter_entry_confidence=_get("counter_entry_confidence", "COUNTER_ENTRY_CONFIDENCE", 75.0, float),
+            counter_pullback_pips=_get("counter_pullback_pips", "COUNTER_PULLBACK_PIPS", 10.0, float),
+            counter_lot_multiplier=_get("counter_lot_multiplier", "COUNTER_LOT_MULTIPLIER", 0.5, float),
         )
+
+    @classmethod
+    def from_env(cls, account_id: str = "default") -> PositionManagerConfig:
+        return cls.from_db(account_id)
 
 
 # ── Position Manager ─────────────────────────────────────────────────────────
@@ -222,6 +250,19 @@ class PositionManager:
             self._last_signal_time[key] = now
             self._pending_executions[symbol] = (direction, 0.0, now)
 
+    def force_action_for_signal(self, symbol: str, direction: str) -> PositionDecision:
+        position = self.get_current_position(symbol)
+        if position is None:
+            return PositionDecision(
+                action=PositionAction.OPEN,
+                reason="Force execution mode: no existing position, open immediately.",
+            )
+        return PositionDecision(
+            action=PositionAction.REVERSE,
+            reason=f"Force execution mode: replace existing {position.direction} position with {direction}.",
+            position=position,
+        )
+
     # ── Decision Matrix ───────────────────────────────────────────────────────
 
     def decide_action(
@@ -270,6 +311,25 @@ class PositionManager:
 
         # ── Opposite direction ────────────────────────────────────────────────
         if opposite_direction:
+            # COUNTER ENTRY: If position is in profit and we have counter entry enabled
+            if (
+                self.config.counter_entry_enabled
+                and position.pnl_points > 0
+                and signal_confidence >= self.config.counter_entry_confidence
+            ):
+                counter_lot = position.volume * self.config.counter_lot_multiplier
+                return PositionDecision(
+                    action=PositionAction.COUNTER_ADD,
+                    reason=(
+                        f"Counter entry: {signal_direction} @ {signal_confidence:.0f}% "
+                        f"while {position.direction} position is in profit "
+                        f"({position.pnl_points:.1f} pips). Adding counter position "
+                        f"to complete bidirectionalscalp. "
+                        f"(Counter lot: {counter_lot:.2f})"
+                    ),
+                    position=position,
+                )
+
             # High confidence: always reverse
             if signal_confidence >= self.config.reverse_high_confidence:
                 return PositionDecision(

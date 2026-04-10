@@ -33,11 +33,6 @@ class ApplicationService:
         runtime_state.set_trading_style(trading_style)
         if api_key or ai_provider:
             runtime_state.set_ai_preferences(provider=ai_provider, api_key=api_key)
-            if api_key:
-                os.environ["AI_API_KEY"] = api_key
-                os.environ["OPENAI_API_KEY"] = api_key
-            if ai_provider:
-                os.environ["AI_PROVIDER"] = ai_provider
 
         engine = TradingEngine(STYLE_CONFIG)
         return await engine.analyze(
@@ -121,7 +116,7 @@ class ApplicationService:
         latest_price = latest_tick.get("bid") if isinstance(latest_tick, dict) else None
         latest_candles = runtime_snapshot.get("latest_candles", {})
         has_live_candles = bool(latest_candles)
-        health_status = "ok" if bridge_connected and has_live_candles else "degraded" if bridge_connected else "ok"
+        health_status = "ok" if bridge_connected and has_live_candles else "degraded" if bridge_connected else "disconnected"
         return HealthResponse(
             status=health_status,
             mt5_connected=bridge_connected,

@@ -22,92 +22,44 @@ logger = logging.getLogger(__name__)
 
 class PositionMonitorConfig:
     """Position monitoring configuration"""
-    def __init__(self):
+    def __init__(self, account_id: str = "default"):
+        self.account_id = account_id
+        self.refresh_config()
+
+    def refresh_config(self):
+        from app.services.database import db
+        db_settings = db.get_settings(self.account_id) if db and db.is_enabled() else {}
+
+        def _get(key: str, env_key: str, default: str, type_func=float):
+            if key in db_settings:
+                return type_func(db_settings[key])
+            return type_func(os.getenv(env_key, default))
+
+        def _get_bool(key: str, env_key: str, default: str) -> bool:
+            if key in db_settings:
+                return bool(db_settings[key])
+            return os.getenv(env_key, default).lower() == "true"
+
         # Partial close settings
-        self.partial_close_enabled = os.getenv("PARTIAL_CLOSE_ENABLED", "true").lower() == "true"
-        self.partial_close_percent = float(os.getenv("PARTIAL_CLOSE_PERCENT", "50.0"))  # 50%
+        self.partial_close_enabled = _get_bool("partial_close_enabled", "PARTIAL_CLOSE_ENABLED", "true")
+        self.partial_close_percent = _get("partial_close_percent", "PARTIAL_CLOSE_PERCENT", "50.0", float)
         
         # Break-even settings
-        self.breakeven_enabled = os.getenv("BREAKEVEN_ENABLED", "true").lower() == "true"
-        self.breakeven_buffer_pips = float(os.getenv("BREAKEVEN_BUFFER_PIPS", "5.0"))  # 5 pips above BE
+        self.breakeven_enabled = _get_bool("breakeven_enabled", "BREAKEVEN_ENABLED", "true")
+        self.breakeven_buffer_pips = _get("breakeven_buffer_pips", "BREAKEVEN_BUFFER_PIPS", "5.0", float)
         
         # Trailing stop settings
-        self.trailing_stop_enabled = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
-        self.trailing_stop_distance_pips = float(os.getenv("TRAILING_STOP_DISTANCE_PIPS", "50.0"))
-        self.trailing_stop_step_pips = float(os.getenv("TRAILING_STOP_STEP_PIPS", "10.0"))
+        self.trailing_stop_enabled = _get_bool("trailing_stop_enabled", "TRAILING_STOP_ENABLED", "true")
+        self.trailing_stop_distance_pips = _get("trailing_stop_distance_pips", "TRAILING_STOP_DISTANCE_PIPS", "50.0", float)
+        self.trailing_stop_step_pips = _get("trailing_stop_step_pips", "TRAILING_STOP_STEP_PIPS", "10.0", float)
         
         # Time-based exit settings
-        self.time_exit_enabled = os.getenv("TIME_EXIT_ENABLED", "true").lower() == "true"
-        self.exit_before_news_minutes = int(os.getenv("EXIT_BEFORE_NEWS_MINUTES", "15"))
-        self.exit_before_weekend_hours = int(os.getenv("EXIT_BEFORE_WEEKEND_HOURS", "2"))
+        self.time_exit_enabled = _get_bool("time_exit_enabled", "TIME_EXIT_ENABLED", "true")
+        self.exit_before_news_minutes = _get("exit_before_news_minutes", "EXIT_BEFORE_NEWS_MINUTES", "15", int)
+        self.exit_before_weekend_hours = _get("exit_before_weekend_hours", "EXIT_BEFORE_WEEKEND_HOURS", "2", int)
         
         # Monitoring interval
-        self.monitor_interval_seconds = float(os.getenv("MONITOR_INTERVAL_SECONDS", "1.0"))
-
-
-class PositionMonitor:
-    """
-    Monitors and manages open positions automatically.
-    Runs as a background task in the MT5 bridge.
-    """
-    
-    def __init__(self, config: Optional[PositionMonitorConfig] = None, magic_number: int = 20250101):
-        self.config = config or PositionMonitorConfig()
-        self.magic_number = magic_number
-        self.running = False
-        self._task: Optional[asyncio.Task] = None
-        
-        # Track which positions have been modified
-        self._partial_closed: set[int] = set()  # ticket numbers
-        self._breakeven_set: set[int] = set()
-        self._trailing_active: dict[int, float] = {}  # ticket -> last trailing SL
-        
-        logger.info("Position Monitor initialized:")
-        logger.info(f"  Partial close: {self.config.partial_close_enabled} ({self.config.partial_close_percent}%)")
-        logger.info(f"  Break-even: {self.config.breakeven_enabled}")
-        logger.info(f"  Trailing stop: {self.config.trailing_stop_enabled}")
-        logger.info(f"  Time exits: {self.config.time_exit_enabled}")
-    
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
-    
-    def start(self):
-        """Start monitoring positions"""
-        if self.running:
-            logger.warning("Position monitor already running")
-            return
-        
-        self.running = True
-        self._task = asyncio.create_task(self._monitor_loop())
-        logger.info("✅ Position monitor started")
-    
-    mt5 = None  # type: ignore
-
-logger = logging.getLogger(__name__)
-
-
-class PositionMonitorConfig:
-    """Position monitoring configuration"""
-    def __init__(self):
-        # Partial close settings
-        self.partial_close_enabled = os.getenv("PARTIAL_CLOSE_ENABLED", "true").lower() == "true"
-        self.partial_close_percent = float(os.getenv("PARTIAL_CLOSE_PERCENT", "50.0"))  # 50%
-        
-        # Break-even settings
-        self.breakeven_enabled = os.getenv("BREAKEVEN_ENABLED", "true").lower() == "true"
-        self.breakeven_buffer_pips = float(os.getenv("BREAKEVEN_BUFFER_PIPS", "5.0"))  # 5 pips above BE
-        
-        # Trailing stop settings
-        self.trailing_stop_enabled = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
-        self.trailing_stop_distance_pips = float(os.getenv("TRAILING_STOP_DISTANCE_PIPS", "50.0"))
-        self.trailing_stop_step_pips = float(os.getenv("TRAILING_STOP_STEP_PIPS", "10.0"))
-        
-        # Time-based exit settings
-        self.time_exit_enabled = os.getenv("TIME_EXIT_ENABLED", "true").lower() == "true"
-        self.exit_before_news_minutes = int(os.getenv("EXIT_BEFORE_NEWS_MINUTES", "15"))
-        self.exit_before_weekend_hours = int(os.getenv("EXIT_BEFORE_WEEKEND_HOURS", "2"))
-        
-        # Monitoring interval
-        self.monitor_interval_seconds = float(os.getenv("MONITOR_INTERVAL_SECONDS", "1.0"))
+        self.monitor_interval_seconds = _get("monitor_interval_seconds", "MONITOR_INTERVAL_SECONDS", "1.0", float)
 
 
 class PositionMonitor:
@@ -561,7 +513,7 @@ def get_position_monitor() -> PositionMonitor:
 
     if _position_monitor is None:
         try:
-            if mt5.terminal_info() is not None:
+            if mt5 and mt5.terminal_info() is not None:
                 _position_monitor = PositionMonitor()
             else:
                 logger.warning("MT5 not initialized — using NullPositionMonitor")

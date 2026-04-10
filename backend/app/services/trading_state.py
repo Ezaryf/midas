@@ -105,10 +105,10 @@ class TradingState:
                         self.daily_pnl = 0.0
                         self.consecutive_losses = 0
 
-                # Count today's trades from signals
+                # Count today's trades from actual orders
                 today_str = self.last_reset_date.isoformat()
                 cursor.execute(
-                    "SELECT COUNT(*) as cnt FROM signals WHERE created_at >= %s AND COALESCE(status, 'NEW') <> 'NO_TRADE'",
+                    "SELECT COUNT(*) as cnt FROM orders WHERE created_at >= %s",
                     (today_str,),
                 )
                 count_row = cursor.fetchone()
@@ -184,10 +184,15 @@ class TradingState:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def record_trade(self, is_loss: bool = False, loss_amount: float = 0.0):
-        """Record a trade execution and update counters."""
+    def record_entry(self):
+        """Record a new trade entry and update counters."""
         with self._lock:
             self.daily_trades += 1
+        self._persist()
+
+    def record_completion(self, is_loss: bool = False, loss_amount: float = 0.0):
+        """Record a trade closure and update PnL/losses."""
+        with self._lock:
             if is_loss:
                 self.consecutive_losses += 1
                 self.daily_pnl -= loss_amount

@@ -16,29 +16,51 @@ logger = logging.getLogger(__name__)
 
 class RiskConfig:
     """Risk management configuration"""
-    def __init__(self):
+    def __init__(self, account_id: str = "default"):
+        self.account_id = account_id
+        self.refresh_config()
+
+    def refresh_config(self):
+        from app.services.database import db
+        db_settings = db.get_settings(self.account_id) if db and db.is_enabled() else {}
+
+        def _get(key: str, env_key: str, default: str, type_func=float):
+            if key in db_settings:
+                return type_func(db_settings[key])
+            return type_func(os.getenv(env_key, default))
+
+        def _get_bool(key: str, env_key: str, default: str) -> bool:
+            if key in db_settings:
+                return bool(db_settings[key])
+            return os.getenv(env_key, default).lower() == "true"
+
         # Position sizing
-        self.max_risk_percent = float(os.getenv("MAX_RISK_PERCENT", "1.0"))  # 1% per trade
-        self.min_lot_size = float(os.getenv("MIN_LOT_SIZE", "0.01"))
-        self.max_lot_size = float(os.getenv("MAX_LOT_SIZE", "1.0"))
+        self.max_risk_percent = _get("max_risk_percent", "MAX_RISK_PERCENT", "1.0", float)
+        self.min_lot_size = _get("min_lot_size", "MIN_LOT_SIZE", "0.01", float)
+        self.max_lot_size = _get("max_lot_size", "MAX_LOT_SIZE", "1.0", float)
         
         # Exposure limits
-        self.max_concurrent_positions = int(os.getenv("MAX_CONCURRENT_POSITIONS", "3"))
-        self.max_daily_trades = int(os.getenv("MAX_DAILY_TRADES", "10"))
+        # Special fallback for max_concurrent_positions
+        if "max_concurrent_positions" in db_settings:
+            self.max_concurrent_positions = int(db_settings["max_concurrent_positions"])
+        else:
+            self.max_concurrent_positions = int(os.getenv("MAX_CONCURRENT_POSITIONS") or os.getenv("AUTO_EXECUTE_MAX_POSITIONS") or "3")
+
+        self.max_daily_trades = _get("max_daily_trades", "MAX_DAILY_TRADES", "10", int)
         
         # Loss limits
-        self.daily_loss_limit = float(os.getenv("DAILY_LOSS_LIMIT", "500.0"))  # $500
-        self.max_drawdown_percent = float(os.getenv("MAX_DRAWDOWN_PERCENT", "20.0"))  # 20%
+        self.daily_loss_limit = _get("daily_loss_limit", "DAILY_LOSS_LIMIT", "500.0", float)
+        self.max_drawdown_percent = _get("max_drawdown_percent", "MAX_DRAWDOWN_PERCENT", "20.0", float)
         
         # Margin requirements
-        self.min_margin_level = float(os.getenv("MIN_MARGIN_LEVEL", "200.0"))  # 200%
-        self.min_free_margin = float(os.getenv("MIN_FREE_MARGIN", "20.0"))  # $20 buffer (reduced from 1000 to allow small lots)
+        self.min_margin_level = _get("min_margin_level", "MIN_MARGIN_LEVEL", "200.0", float)
+        self.min_free_margin = _get("min_free_margin", "MIN_FREE_MARGIN", "20.0", float)
         
         # Correlation
-        self.allow_hedging = os.getenv("ALLOW_HEDGING", "false").lower() == "true"
+        self.allow_hedging = _get_bool("allow_hedging", "ALLOW_HEDGING", "false")
         
         # News blackout
-        self.news_blackout_minutes = int(os.getenv("NEWS_BLACKOUT_MINUTES", "30"))
+        self.news_blackout_minutes = _get("news_blackout_minutes", "NEWS_BLACKOUT_MINUTES", "30", int)
 
 
 class RiskManager:
@@ -101,14 +123,15 @@ class RiskManager:
                 "daily_net": 0.0,
             }
         else:
-            # Filter only OUT deals (position closes)
+            # Filter deals: IN for count, OUT for profit/loss
+            in_deals = [d for d in deals if d.entry == mt5.DEAL_ENTRY_IN]
             out_deals = [d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT]
             
             profits = [d.profit for d in out_deals if d.profit > 0]
             losses = [d.profit for d in out_deals if d.profit < 0]
             
             stats = {
-                "daily_trades": len(out_deals),
+                "daily_trades": len(in_deals),
                 "daily_profit": sum(profits),
                 "daily_loss": abs(sum(losses)),
                 "daily_net": sum(d.profit for d in out_deals),
