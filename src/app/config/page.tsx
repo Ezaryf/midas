@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
 import Link from "next/link";
@@ -67,13 +67,18 @@ export default function ConfigPage() {
     flash();
   };
 
-  const syncSettingToBackend = async (key: string, value: number) => {
+  const syncSettingToBackend = async (key: string, value: number | boolean) => {
     try {
-      const body: Record<string, number> = {};
+      const body: Record<string, number | boolean> = {};
       if (key === "maxConcurrentPositions") body.max_concurrent_positions = value;
+      else if (key === "maxDailyTrades") body.max_daily_trades = value;
       else if (key === "dailyLossLimit") body.daily_loss_limit = value;
       else if (key === "maxRiskPercent") body.max_risk_percent = value;
       else if (key === "newsBlackoutMinutes") body.news_blackout_minutes = value;
+      else if (key === "autoExecuteConfidence") body.auto_execute_confidence = value;
+      else if (key === "analysisIntervalSeconds") body.analysis_interval_seconds = value;
+      else if (key === "positionCooldownSeconds") body.position_cooldown_seconds = value;
+      else if (key === "enableKillSwitch") body.enable_kill_switch = value;
       
       if (Object.keys(body).length > 0) {
         await fetch("/api/settings", {
@@ -134,7 +139,14 @@ export default function ConfigPage() {
       "MIDAS_WS_URL=ws://localhost:8000/ws/mt5", "DEFAULT_LOT=0.01", "TICK_INTERVAL=0.1",
       "AI_PROVIDER=" + config.aiProvider, "AI_API_KEY=" + config.apiKey,
       "TRADING_STYLE=" + (config.tradingStyle.charAt(0).toUpperCase() + config.tradingStyle.slice(1)),
-      "ANALYSIS_INTERVAL_SECONDS=30",
+      "ANALYSIS_INTERVAL_SECONDS=" + config.analysisIntervalSeconds,
+      "AUTO_EXECUTE_MIN_CONFIDENCE=" + config.autoExecuteConfidence,
+      "MAX_DAILY_TRADES=" + config.maxDailyTrades,
+      "MAX_CONCURRENT_POSITIONS=" + config.maxConcurrentPositions,
+      "MAX_RISK_PERCENT=" + config.maxRiskPercent,
+      "DAILY_LOSS_LIMIT=" + config.dailyLossLimit,
+      "NEWS_BLACKOUT_MINUTES=" + config.newsBlackoutMinutes,
+      "POSITION_COOLDOWN_SECONDS=" + config.positionCooldownSeconds,
     ].join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([lines], { type: "text/plain" }));
@@ -343,7 +355,7 @@ export default function ConfigPage() {
             <div className="space-y-6">
               <div>
                 <h2 className="text-base font-semibold mb-0.5">Trading Style</h2>
-                <p className="text-xs text-text-muted">Tailors signal frequency, timeframes, and default risk. Saved immediately.</p>
+                <p className="text-xs text-text-muted">Tailors signal frequency, execution thresholds, and loop behavior. Saved immediately.</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 {TRADING_STYLES.map(s => (
@@ -358,6 +370,41 @@ export default function ConfigPage() {
                     <p className="text-xs text-text-muted">TF: {s.tf}</p>
                     <p className="text-xs text-text-muted">Risk: {s.risk}</p>
                   </button>
+                ))}
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {([
+                  { key: "autoExecuteConfidence", label: "Auto-Execute Confidence", unit: "%", step: 1, min: 50, max: 99 },
+                  { key: "maxDailyTrades", label: "Max Daily Trades", unit: "trades", step: 1, min: 1, max: 50 },
+                  { key: "analysisIntervalSeconds", label: "Analysis Interval", unit: "sec", step: 1, min: 3, max: 300 },
+                  { key: "positionCooldownSeconds", label: "Signal Cooldown", unit: "sec", step: 5, min: 0, max: 300 },
+                ] as const).map(({ key, label, unit, step, min, max }) => (
+                  <div key={key} className="rounded-xl bg-surface p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-xs font-medium text-text-secondary">{label}</label>
+                      <span className="text-xs text-text-muted">{unit}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step={step}
+                        value={(config as unknown as Record<string, number>)[key]}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
+                        className="flex-1 accent-gold"
+                      />
+                      <input
+                        type="number"
+                        min={min}
+                        max={max}
+                        step={step}
+                        value={(config as unknown as Record<string, number>)[key]}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
+                        className="w-20 rounded-lg bg-surface-active border border-border px-2 py-1.5 text-sm text-center font-[family-name:var(--font-jetbrains-mono)] focus:outline-none focus:border-gold/40"
+                      />
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -393,6 +440,16 @@ export default function ConfigPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+              <div className="flex items-center justify-between rounded-xl bg-surface p-4">
+                <div>
+                  <p className="text-sm font-medium">Kill Switch</p>
+                  <p className="text-xs text-text-muted">{config.enableKillSwitch ? "Halts trading on stale data, drawdown, or losing streaks" : "Kill switch disabled — no automatic trading halt"}</p>
+                </div>
+                <button onClick={() => { saveField("enableKillSwitch", !config.enableKillSwitch); syncSettingToBackend("enableKillSwitch", !config.enableKillSwitch); }}
+                  className={"relative h-6 w-11 rounded-full transition-colors " + (config.enableKillSwitch ? "bg-bullish" : "bg-surface-active")}>
+                  <span className={"absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-md transition-transform " + (config.enableKillSwitch ? "translate-x-5" : "")} />
+                </button>
               </div>
               <div className="rounded-xl bg-warning/5 border border-warning/20 p-4">
                 <p className="text-xs text-warning">AI signals are not financial advice. Only trade capital you can afford to lose.</p>

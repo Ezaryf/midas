@@ -23,6 +23,13 @@ export interface ChartLine {
   style?: LineStyle;
 }
 
+export interface ChartLegendItem {
+  id: string;
+  title: string;
+  subtitle: string;
+  tone: "selected" | "backup" | "rejected" | "history";
+}
+
 interface OHLCVData extends CandlestickData<Time> {
   volume?: number;
 }
@@ -30,6 +37,7 @@ interface OHLCVData extends CandlestickData<Time> {
 interface TradingViewChartProps {
   data: OHLCVData[];
   lines?: ChartLine[];
+  legendItems?: ChartLegendItem[];
   height?: number;
 }
 
@@ -91,7 +99,7 @@ interface TooltipData {
   visible: boolean;
 }
 
-export default function TradingViewChart({ data, lines = [], height = 500 }: TradingViewChartProps) {
+export default function TradingViewChart({ data, lines = [], legendItems = [], height = 500 }: TradingViewChartProps) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const chartRef      = useRef<IChartApi | null>(null);
   const candleRef     = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -397,6 +405,34 @@ export default function TradingViewChart({ data, lines = [], height = 500 }: Tra
           VOL
         </button>
       </div>
+
+      {legendItems.length > 0 && (
+        <div className="absolute bottom-3 left-3 z-20 max-w-[320px] space-y-1.5 rounded-lg border border-white/10 bg-[#0f1219]/85 p-2 backdrop-blur-md shadow-lg">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-white/35">Chart Markers</p>
+          {legendItems.map((item) => {
+            const toneClass =
+              item.tone === "selected"
+                ? "border-bullish/20 bg-bullish/10 text-bullish"
+                : item.tone === "backup"
+                ? "border-gold/20 bg-gold/10 text-gold"
+                : item.tone === "rejected"
+                ? "border-bearish/20 bg-bearish/10 text-bearish"
+                : "border-white/10 bg-white/5 text-white/65";
+
+            return (
+              <div key={item.id} className="rounded-md border border-white/5 bg-black/20 p-2">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-[10px] font-semibold text-white/85">{item.title}</p>
+                  <span className={`rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-widest ${toneClass}`}>
+                    {item.tone}
+                  </span>
+                </div>
+                <p className="mt-1 text-[9px] leading-relaxed text-white/45">{item.subtitle}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* OHLCV Tooltip */}
       {tooltip && (

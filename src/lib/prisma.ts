@@ -19,12 +19,19 @@ export function getPrismaClient(): PrismaLike | null {
   }
 
   if (!global.__midasPrisma__) {
-    // Parse the mysql:// URI to support passwords with @ characters or empty passwords
-    const match = process.env.DATABASE_URL.match(
-      /mysql:\/\/(.+?):(.*)@([^@:]+):(\d+)\/(.+)/
+    console.log("[Prisma] Initializing new MariaDB adapter client...");
+    // Ensure we use the mariadb:// protocol and 127.0.0.1 for local connections
+    let rawUrl = process.env.DATABASE_URL;
+    if (rawUrl.startsWith("mysql://")) {
+      rawUrl = "mariadb://" + rawUrl.substring(8);
+    }
+    rawUrl = rawUrl.replace("@localhost", "@127.0.0.1");
+
+    const match = rawUrl.match(
+      /mariadb:\/\/(.+?):(.*)@([^@:]+):(\d+)\/(.+)/
     );
-    let config: any;
     
+    let config: any;
     if (match) {
       config = {
         user: match[1],
@@ -33,9 +40,11 @@ export function getPrismaClient(): PrismaLike | null {
         port: parseInt(match[4], 10),
         database: match[5],
         connectionLimit: 10,
+        acquireTimeout: 30000, // 30 seconds
+        connectTimeout: 10000, // 10 seconds
       };
     } else {
-      config = process.env.DATABASE_URL;
+      config = rawUrl;
     }
     
     // The adapter expects PoolConfig, not an initialized Pool.

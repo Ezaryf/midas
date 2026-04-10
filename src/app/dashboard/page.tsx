@@ -181,6 +181,8 @@ export default function DashboardPage() {
   const [styleChanging, setStyleChanging] = useState(false);
   const [rightTab, setRightTab]       = useState<RightTab>("engine");
   const [bottomTab, setBottomTab]     = useState<BottomTab>("terminal");
+  const [bottomPanelHeight, setBottomPanelHeightRaw] = useState(288);
+  const [isResizing, setIsResizing] = useState(false);
   const [rightOpen, setRightOpen]     = useState(true);
   const [leftOpen, setLeftOpen]       = useState(true);
   const [lastAnalysis, setLastAnalysis] = useState<Date | null>(null);
@@ -194,15 +196,52 @@ export default function DashboardPage() {
         
         const savedTs = localStorage.getItem("midas_trading_style") as TradingStyle | null;
         if (savedTs && ["Scalper","Intraday","Swing"].includes(savedTs)) setTradingStyleRaw(savedTs);
+
+        const savedHeight = localStorage.getItem("midas_bottom_panel_height");
+        if (savedHeight) setBottomPanelHeightRaw(Number(savedHeight));
       } catch {}
     });
   }, []);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    document.body.style.cursor = 'row-resize';
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    
+    const handleMove = (e: PointerEvent) => {
+      // Don't resize if we accidentally select text or leave the window
+      const newHeight = window.innerHeight - e.clientY;
+      const clamped = Math.max(160, Math.min(newHeight, window.innerHeight * 0.8));
+      setBottomPanelHeightRaw(clamped);
+    };
+    
+    const handleUp = (e: PointerEvent) => {
+      setIsResizing(false);
+      globalThis.document.body.style.cursor = '';
+      const newHeight = globalThis.window.innerHeight - e.clientY;
+      const clamped = Math.max(160, Math.min(newHeight, globalThis.window.innerHeight * 0.8));
+      try { localStorage.setItem("midas_bottom_panel_height", String(clamped)); } catch { /* ignore */ }
+    };
+    
+    globalThis.addEventListener('pointermove', handleMove);
+    globalThis.addEventListener('pointerup', handleUp);
+    return () => {
+      globalThis.removeEventListener('pointermove', handleMove);
+      globalThis.removeEventListener('pointerup', handleUp);
+    };
+  }, [isResizing]);
 
   // Wrapped setters that also persist
   const setTimeframe = useCallback((tf: Timeframe) => {
     setTimeframeRaw(tf);
     try { localStorage.setItem("midas_timeframe", tf); } catch { /* ignore */ }
   }, []);
+
+
 
   const setTradingStyle = useCallback((style: TradingStyle) => {
     setTradingStyleRaw(style);
@@ -283,7 +322,7 @@ export default function DashboardPage() {
       }).catch(() => {});
 
       // Force-generate a signal with the new style
-      await fetch("/api/signals/force-generate", {
+      await fetch("/api/signals/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -341,15 +380,81 @@ export default function DashboardPage() {
 
   // No manual generation needed - system is fully automatic via WebSocket
 
+  const latestMatchingBatch = useMemo(() => {
+    if (!latestBatch || !targetSymbol) return null;
+    const batchSym = latestBatch.symbol.toUpperCase().replace(/\./g, '').replace('M', '');
+    const target = targetSymbol.toUpperCase().replace(/\./g, '').replace('M', '');
+    const isLocalSymbolMatch = batchSym === target ||
+      (batchSym.includes('GOLD') && target.includes('XAU')) ||
+      (batchSym.includes('XAU') && target.includes('GOLD'));
+
+    if (
+      isLocalSymbolMatch &&
+      latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase()
+    ) {
+      return latestBatch;
+    }
+    return null;
+  }, [latestBatch, targetSymbol, tradingStyle]);
+
   const chartLines = useMemo(() => {
     const lines: Array<{ price: number; color: string; label: string; style: LineStyle }> = [];
     const MAX_CHART_SIGNALS = 8;
+    const MAX_CANDIDATE_SETUPS = 4;
     // Dynamic color generator — HSL rotation for unlimited distinct colors
     const generateColor = (idx: number) => ({
       entry: `hsl(${(idx * 47) % 360}, 70%, 65%)`,
       sl:    `hsl(${(idx * 47 + 15) % 360}, 80%, 55%)`,
       tp:    `hsl(${(idx * 47 + 120) % 360}, 70%, 60%)`,
     });
+    const isUsableLevel = (value: number | undefined) => typeof value === "number" && value > 0 && Number.isFinite(value);
+
+    const candidatePool = (latestMatchingBatch?.engine_insight?.candidates ?? [])
+      .filter((candidate) =>
+        candidate.direction !== "HOLD" &&
+        isUsableLevel(candidate.entry_price) &&
+        isUsableLevel(candidate.stop_loss) &&
+        isUsableLevel(candidate.take_profit_1)
+      )
+      .sort((a, b) => {
+        const statusRank = { selected: 0, backup: 1, rejected: 2 } as const;
+        const rankDelta = statusRank[a.status] - statusRank[b.status];
+        if (rankDelta !== 0) return rankDelta;
+        return (b.score ?? 0) - (a.score ?? 0);
+      })
+      .slice(0, MAX_CANDIDATE_SETUPS);
+
+    if (candidatePool.length > 0) {
+      candidatePool.forEach((candidate, idx) => {
+        const c = generateColor(idx);
+        let prefix = `R${idx + 1}`;
+        if (candidate.status === "selected") {
+          prefix = `A${idx + 1}`;
+        } else if (candidate.status === "backup") {
+          prefix = `B${idx + 1}`;
+        }
+        const directionCode = candidate.direction === "BUY" ? "L" : "S";
+        const entryStyle = candidate.status === "rejected" ? LineStyle.Dashed : LineStyle.Solid;
+        const riskStyle = candidate.status === "selected" ? LineStyle.Dashed : LineStyle.Dotted;
+
+        lines.push(
+          { price: candidate.entry_price, color: c.entry, label: `${prefix}${directionCode}-E`, style: entryStyle },
+          { price: candidate.stop_loss, color: c.sl, label: `${prefix}${directionCode}-SL`, style: riskStyle },
+          { price: candidate.take_profit_1, color: c.tp, label: `${prefix}${directionCode}-TP1`, style: LineStyle.Dashed },
+        );
+
+        if (isUsableLevel(candidate.take_profit_2)) {
+          lines.push({
+            price: candidate.take_profit_2,
+            color: c.tp,
+            label: `${prefix}${directionCode}-TP2`,
+            style: LineStyle.Dotted,
+          });
+        }
+      });
+
+      return lines;
+    }
 
     const active = displayHistory.filter(s =>
       s.status !== "STOPPED" && s.status !== "HIT_TP1" && s.status !== "HIT_TP2" &&
@@ -397,7 +502,44 @@ export default function DashboardPage() {
     });
 
     return lines;
-  }, [displayHistory, tradingStyle, livePrice?.price, targetSymbol]);
+  }, [displayHistory, latestMatchingBatch, tradingStyle, livePrice?.price, targetSymbol]);
+
+  const chartLegendItems = useMemo(() => {
+    const liveCandidates = (latestMatchingBatch?.engine_insight?.candidates ?? [])
+      .filter((candidate) => candidate.direction !== "HOLD" && candidate.entry_price > 0)
+      .sort((a, b) => {
+        const statusRank = { selected: 0, backup: 1, rejected: 2 } as const;
+        const rankDelta = statusRank[a.status] - statusRank[b.status];
+        if (rankDelta !== 0) return rankDelta;
+        return (b.score ?? 0) - (a.score ?? 0);
+      })
+      .slice(0, 4)
+      .map((candidate, index) => ({
+        id: `${candidate.status}-${candidate.direction}-${candidate.entry_price}-${index}`,
+        title: `${candidate.direction} ${candidate.setup_type.replaceAll("_", " ")}`,
+        subtitle: `Entry ${formatPrice(candidate.entry_price)} | SL ${formatPrice(candidate.stop_loss)} | TP1 ${formatPrice(candidate.take_profit_1)}`,
+        tone: candidate.status,
+      }));
+
+    if (liveCandidates.length > 0) return liveCandidates;
+
+    return displayHistory
+      .filter((signal) =>
+        signal.status !== "STOPPED" &&
+        signal.status !== "HIT_TP1" &&
+        signal.status !== "HIT_TP2" &&
+        signal.entry_price > 0 &&
+        signal.trading_style?.toLowerCase() === tradingStyle.toLowerCase() &&
+        (signal.symbol || "XAUUSD").toUpperCase() === targetSymbol.toUpperCase()
+      )
+      .slice(0, 2)
+      .map((signal, index) => ({
+        id: `${signal.id || signal.signal_id || signal.entry_price}-${index}`,
+        title: `${signal.direction} live signal`,
+        subtitle: `Entry ${formatPrice(signal.entry_price)} | SL ${formatPrice(signal.stop_loss)} | TP1 ${formatPrice(signal.take_profit_1)}`,
+        tone: "history" as const,
+      }));
+  }, [displayHistory, latestMatchingBatch, targetSymbol, tradingStyle]);
 
   const handleExecuteSignal = useCallback(async () => {
     if (!displaySignal || displaySignal.direction === "HOLD") return { status: "error", message: "No actionable signal" };
@@ -433,33 +575,24 @@ export default function DashboardPage() {
     if (price > 0) return "Live ticks streaming";
     return "Waiting for live tick";
   }, [isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
-  const latestMatchingBatch = useMemo(() => {
-    if (!latestBatch || !targetSymbol) return null;
-    const batchSym = latestBatch.symbol.toUpperCase().replace(/\./g, '').replace('M', '');
-    const target = targetSymbol.toUpperCase().replace(/\./g, '').replace('M', '');
-    const isLocalSymbolMatch = batchSym === target || 
-      (batchSym.includes('GOLD') && target.includes('XAU')) || 
-      (batchSym.includes('XAU') && target.includes('GOLD'));
-      
-    if (
-      isLocalSymbolMatch &&
-      latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase()
-    ) {
-      return latestBatch;
-    }
-    return null;
-  }, [latestBatch, targetSymbol, tradingStyle]);
   const noTradeReasons = useMemo(() => {
     return latestMatchingBatch?.primary?.no_trade_reasons ?? [];
   }, [latestMatchingBatch]);
   const noSetupMessage = useMemo(() => {
+    const visibleCandidates = (latestMatchingBatch?.engine_insight?.candidates ?? []).filter(
+      (candidate) => candidate.direction !== "HOLD" && candidate.entry_price > 0
+    );
+    if (visibleCandidates.length > 0) {
+      const topCandidate = visibleCandidates[0];
+      return `The engine found ${visibleCandidates.length} chart setup${visibleCandidates.length > 1 ? "s" : ""} and marked them on the chart, but the primary decision stayed ${latestMatchingBatch?.primary.direction ?? "HOLD"} because ${topCandidate.blocker_reasons[0]?.message?.toLowerCase() ?? "the execution filters did not clear"}.`;
+    }
     if (noTradeReasons.length > 0) return noTradeReasons[0]?.message ?? "The engine rejected the current price action.";
     if (!isConnected) return "MT5 is offline, so there is no live market feed yet.";
     if (!isSymbolMatch) return `MT5 is streaming ${currentSymbol} while the dashboard is set to ${activeSymbol}.`;
     if (isStale) return "The last MT5 tick is stale, so the feed needs to refresh before trusting the board.";
     if (price > 0) return "Live ticks are moving, but the engine does not see a qualified setup at this price.";
     return `Engine is listening for ${activeSymbol} ticks and waiting for the first valid price update.`;
-  }, [noTradeReasons, isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
+  }, [latestMatchingBatch, noTradeReasons, isConnected, isSymbolMatch, currentSymbol, activeSymbol, isStale, price]);
 
   return (
     <div className="flex flex-col w-screen h-[100dvh] overflow-hidden bg-[#090b0f] text-text-primary antialiased">
@@ -835,13 +968,25 @@ export default function DashboardPage() {
                 <TradingViewChart
                   data={candleData}
                   lines={chartLines}
+                  legendItems={chartLegendItems}
                 />
               </div>
             )}
           </div>
 
           {/* ── EXECUTION TERMINAL (BOTTOM PANEL) ── */}
-          <div className="h-56 md:h-72 flex-none bg-[#0a0d14] flex flex-col relative z-20">
+          <div 
+            className="flex-none bg-[#0a0d14] flex flex-col relative z-20"
+            style={{ height: bottomPanelHeight }}
+          >
+            {/* Drag Handle */}
+            <div 
+              onPointerDown={handlePointerDown}
+              className="absolute top-0 inset-x-0 h-4 -translate-y-1/2 cursor-row-resize z-50 group flex items-center justify-center"
+            >
+              <div className={`w-12 h-1 rounded-full transition-colors ${isResizing ? "bg-gold" : "bg-white/10 group-hover:bg-gold/50"}`} />
+            </div>
+
             <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-[#0f1219]">
               <h2 className="text-[10px] font-bold tracking-widest uppercase text-white/50 flex items-center gap-2">
                 <Terminal className="h-3 w-3" /> System Terminal
@@ -916,7 +1061,7 @@ export default function DashboardPage() {
               )}
 
               {bottomTab === "market-state" && (
-                <div className="max-w-3xl">
+                <div className="w-full h-full">
                   <MarketStatePanel />
                 </div>
               )}
@@ -1005,22 +1150,22 @@ export default function DashboardPage() {
               )}
               {rightTab === "news" && (
                 newsLoading
-                  ? <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-20 rounded bg-white/5 animate-pulse" />)}</div>
+                  ? <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <div key={`news-skel-${i}`} className="h-20 rounded bg-white/5 animate-pulse" />)}</div>
                   : <NewsSentiment items={newsItems} />
               )}
               {rightTab === "calendar" && (
                 calendarLoading
-                  ? <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-16 rounded bg-white/5 animate-pulse" />)}</div>
+                  ? <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <div key={`cal-skel-${i}`} className="h-16 rounded bg-white/5 animate-pulse" />)}</div>
                   : <EconomicCalendar events={calendarEvents} />
               )}
               {rightTab === "history" && (
                 historyLoading
-                  ? <div className="space-y-2">{[...Array(4)].map((_, i) => <div key={i} className="h-12 rounded bg-white/5 animate-pulse" />)}</div>
+                  ? <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <div key={`hist-skel-${i}`} className="h-12 rounded bg-white/5 animate-pulse" />)}</div>
                   : (
                     <>
                       {displayHistory.length > 0 && (
                         <div className="flex items-center justify-between mb-3 border-b border-white/5 pb-2">
-                          <span className="text-[9px] font-bold tracking-widest text-white/30 uppercase">{displayHistory.length} Record{displayHistory.length !== 1 ? "s" : ""}</span>
+                          <span className="text-[9px] font-bold tracking-widest text-white/30 uppercase">{displayHistory.length} Record{displayHistory.length === 1 ? "" : "s"}</span>
                           <button
                             onClick={clearHistory}
                             disabled={clearing}
