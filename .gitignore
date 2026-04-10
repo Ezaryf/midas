@@ -40,10 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-*.md
-
 # python
-__pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 /.ruff_cache/
@@ -51,3 +49,17 @@ backend/venv/
 
 # temp
 tmp/
+
+# test artifacts
+test-results/
+
+# backup files
+*.backup
+
+# npm lock (project uses bun)
+package-lock.json
+
+# AI tool configs
+.agents/
+.claude/
+.kiro/
