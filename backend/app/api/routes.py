@@ -76,6 +76,10 @@ class UpdateSettingsRequest(BaseModel):
     max_risk_percent: float | None = None
     daily_loss_limit: float | None = None
     news_blackout_minutes: int | None = None
+    auto_execute_confidence: float | None = None
+    analysis_interval_seconds: int | None = None
+    position_cooldown_seconds: int | None = None
+    enable_kill_switch: bool | None = None
 
 
 class RiskCheckRequest(BaseModel):
@@ -111,9 +115,12 @@ async def set_target_symbol(req: SetTargetSymbolRequest):
 @router.post("/settings", response_model=GenericStatusResponse)
 async def update_settings(req: UpdateSettingsRequest):
     from app.services.risk_manager import get_risk_manager
+    from app.services.position_manager import get_position_manager
+    import app.core.loop as trading_loop
 
     changes = []
     risk_manager = get_risk_manager()
+    position_manager = get_position_manager()
 
     if req.max_concurrent_positions is not None:
         os.environ["MAX_CONCURRENT_POSITIONS"] = str(req.max_concurrent_positions)
@@ -123,6 +130,8 @@ async def update_settings(req: UpdateSettingsRequest):
 
     if req.max_daily_trades is not None:
         os.environ["MAX_DAILY_TRADES"] = str(req.max_daily_trades)
+        if risk_manager:
+            risk_manager.config.max_daily_trades = req.max_daily_trades
         changes.append(f"max_daily_trades={req.max_daily_trades}")
 
     if req.max_risk_percent is not None:
@@ -142,6 +151,24 @@ async def update_settings(req: UpdateSettingsRequest):
         if risk_manager:
             risk_manager.config.news_blackout_minutes = req.news_blackout_minutes
         changes.append(f"news_blackout_minutes={req.news_blackout_minutes}")
+
+    if req.auto_execute_confidence is not None:
+        os.environ["AUTO_EXECUTE_MIN_CONFIDENCE"] = str(req.auto_execute_confidence)
+        changes.append(f"auto_execute_confidence={req.auto_execute_confidence}")
+
+    if req.analysis_interval_seconds is not None:
+        os.environ["ANALYSIS_INTERVAL_SECONDS"] = str(req.analysis_interval_seconds)
+        trading_loop.ANALYSIS_INTERVAL = req.analysis_interval_seconds
+        changes.append(f"analysis_interval_seconds={req.analysis_interval_seconds}")
+
+    if req.position_cooldown_seconds is not None:
+        os.environ["POSITION_COOLDOWN_SECONDS"] = str(req.position_cooldown_seconds)
+        position_manager.config.cooldown_seconds = req.position_cooldown_seconds
+        changes.append(f"position_cooldown_seconds={req.position_cooldown_seconds}")
+
+    if req.enable_kill_switch is not None:
+        os.environ["ENABLE_KILL_SWITCH"] = str(req.enable_kill_switch).lower()
+        changes.append(f"enable_kill_switch={req.enable_kill_switch}")
 
     logger.info(f"Settings updated: {', '.join(changes)}")
     return GenericStatusResponse(status="ok", message="Settings updated", data={"changes": changes})

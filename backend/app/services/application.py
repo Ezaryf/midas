@@ -116,17 +116,27 @@ class ApplicationService:
         from app.services.database import db
 
         bridge_connected = len(manager.active_connections) > 0
+        runtime_snapshot = runtime_state.snapshot()
         latest_tick = runtime_state.get_tick() or manager.latest_tick or {}
         latest_price = latest_tick.get("bid") if isinstance(latest_tick, dict) else None
+        latest_candles = runtime_snapshot.get("latest_candles", {})
+        has_live_candles = bool(latest_candles)
+        health_status = "ok" if bridge_connected and has_live_candles else "degraded" if bridge_connected else "ok"
         return HealthResponse(
-            status="ok",
+            status=health_status,
             mt5_connected=bridge_connected,
             bridge_count=len(manager.active_connections),
             latest_price=latest_price,
             pending_signals=len(manager._pending_signals),
             database_enabled=db.is_enabled(),
-            runtime_state=runtime_state.snapshot(),
-            message="Bridge connected" if bridge_connected else "No bridge - run: python backend/mt5_bridge.py --auto-trade",
+            runtime_state=runtime_snapshot,
+            message=(
+                "Bridge connected with live tick/candle cache"
+                if bridge_connected and has_live_candles
+                else "Bridge connected but live candle cache is empty"
+                if bridge_connected
+                else "No bridge - run: python backend/mt5_bridge.py --auto-trade"
+            ),
         )
 
     def account(self) -> dict[str, Any]:

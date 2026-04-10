@@ -52,6 +52,15 @@ SYMBOL        = os.getenv("MT5_SYMBOL", "XAUUSD")
 TICK_INTERVAL = float(os.getenv("TICK_INTERVAL", "1.0"))
 DEFAULT_LOT   = float(os.getenv("DEFAULT_LOT", "0.01"))
 MAGIC_NUMBER  = 20250101
+CANDLE_PUSH_INTERVAL = float(os.getenv("CANDLE_PUSH_INTERVAL", "5.0"))
+CANDLE_TIMEFRAMES = {
+    "1m": mt5.TIMEFRAME_M1,
+    "5m": mt5.TIMEFRAME_M5,
+    "15m": mt5.TIMEFRAME_M15,
+    "1h": mt5.TIMEFRAME_H1,
+    "4h": mt5.TIMEFRAME_H4,
+}
+CANDLE_BARS = int(os.getenv("CANDLE_BARS", "300"))
 
 
 # ── MT5 Initialisation ────────────────────────────────────────────────────────
@@ -196,11 +205,25 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
         
         # 4. Final check
         if not can_trade:
+                if can_trade_min:
+                    lot = min_lot
+                    can_trade = True
+                    logger.info(f"✅ Adjusted to minimum viable lot size: {lot}")
+                else:
+                    reason = min_reason  # Update reason to the minimum lot failure
+        
+        # 4. Final check
+        if not can_trade:
             logger.warning(f"⚠️ Risk check failed: {reason}")
             return {"status": "blocked", "reason": reason}
             
         logger.info(f"Risk-adjusted lot size approved: {lot}")
     
+    # ── Position Query ────────────────────────────────────────────────────────
+
+    def get_current_position(self, symbol: str) -> None:
+        pass
+
     # ──────────────────────────────────────────────────────────────────────────
 
     # Retry loop for transient errors
@@ -283,16 +306,23 @@ def _update_position_decision_execution(signal_id: str | None, result: dict, db=
     if not signal_id or not db or not db.is_enabled():
         return
 
+    def _do_update():
+        try:
+            status = str(result.get("status") or "").lower()
+            execution_result = result.get("comment") or result.get("reason") or result.get("message") or status
+            db.update_position_decision_execution(
+                signal_id=signal_id,
+                executed=status in {"ok", "closed"},
+                execution_result=execution_result,
+            )
+        except Exception as exc:
+            logger.error(f"Failed to update position decision execution: {exc}")
+
     try:
-        status = str(result.get("status") or "").lower()
-        execution_result = result.get("comment") or result.get("reason") or result.get("message") or status
-        db.update_position_decision_execution(
-            signal_id=signal_id,
-            executed=status in {"ok", "closed"},
-            execution_result=execution_result,
-        )
-    except Exception as exc:
-        logger.error(f"Failed to update position decision execution: {exc}")
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _do_update)
+    except RuntimeError:
+        _do_update()
 
 
 def _close_single_position(pos, *, close_reason: str, db=None) -> dict:
@@ -384,6 +414,34 @@ def close_positions_for_symbol(symbol: str, *, close_reason: str, db=None) -> di
     }
 
 
+def _fetch_candles(symbol: str, timeframe: str, count: int = CANDLE_BARS) -> list[dict]:
+    tf = CANDLE_TIMEFRAMES.get(timeframe)
+    if tf is None:
+        return []
+
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+        if rates is None or len(rates) == 0:
+            return []
+
+        payload: list[dict] = []
+        for row in rates:
+            payload.append(
+                {
+                    "time": datetime.fromtimestamp(int(row["time"]), tz=timezone.utc).isoformat(),
+                    "open": round(float(row["open"]), 2),
+                    "high": round(float(row["high"]), 2),
+                    "low": round(float(row["low"]), 2),
+                    "close": round(float(row["close"]), 2),
+                    "volume": int(row["tick_volume"] if "tick_volume" in row.dtype.names else row["real_volume"]),
+                }
+            )
+        return payload
+    except Exception as exc:
+        logger.warning(f"Failed to fetch candles for {symbol} {timeframe}: {exc}")
+        return []
+
+
 # ── WebSocket Client ──────────────────────────────────────────────────────────
 
 async def run(auto_trade: bool = False):
@@ -408,7 +466,9 @@ async def run(auto_trade: bool = False):
             logger.info("✅ Connected to Midas backend. Streaming ticks...")
             await asyncio.gather(
                 tick_sender(ws),
+                candle_sender(ws),
                 command_receiver(ws, auto_trade),
+                order_executor_worker(ws, auto_trade),
             )
         except websockets.ConnectionClosed:
             logger.warning("Connection closed — reconnecting in 5s...")
@@ -447,11 +507,13 @@ async def tick_sender(ws):
                     },
                 }
                 await ws.send(json.dumps(payload))
-        await asyncio.sleep(TICK_INTERVAL)
+            await asyncio.sleep(TICK_INTERVAL)
 
 
-async def command_receiver(ws, auto_trade: bool):
-    # Import database service and risk manager
+execution_queue = asyncio.Queue()
+
+
+async def order_executor_worker(ws, auto_trade: bool):
     import sys
     sys.path.insert(0, str(Path(__file__).parent))
     try:
@@ -462,75 +524,56 @@ async def command_receiver(ws, auto_trade: bool):
         logger.warning("Database service not available in bridge")
         db = None
         risk_manager = None
-    
-    async for raw in ws:
-        try:
-            payload = json.loads(raw)
-            msg_type = payload.get("type")
-            if msg_type != "SIGNAL":
-                continue
 
-            data = payload.get("data", {})
-            signal_id = data.get("signal_id", "unknown")
-            direction = str(data.get("direction", "HOLD")).upper()
-            action = payload.get("action")
-
-            logger.info(f"📡 Signal received [{signal_id}]: {direction} | confidence {data.get('confidence')}%")
-            logger.info(f"   Entry: {data.get('entry_price')} | SL: {data.get('stop_loss')} | TP1: {data.get('take_profit_1')}")
-
-            effective_symbol = data.get("symbol") or SYMBOL
-            position_action = str(data.get("position_action") or "open").lower()
-            is_duplicate = bool(data.get("is_duplicate"))
-            logger.info(f"   Position action: {position_action}")
-
-            if action != "PLACE_ORDER":
-                continue
-
-            if not auto_trade:
-                logger.warning("   Auto-trade is OFF - restart with --auto-trade to execute orders")
-                await ws.send(json.dumps({
-                    "type": "ACK",
-                    "signal_id": signal_id,
-                    "status": "skipped",
-                    "message": "Auto-trade is disabled",
-                }))
-                continue
-
-            if is_duplicate or position_action == "ignore":
+    while True:
+        task = await execution_queue.get()
+        data = task["data"]
+        action = task["action"]
+        
+        signal_id = data.get("signal_id", "unknown")
+        direction = str(data.get("direction", "HOLD")).upper()
+        effective_symbol = data.get("symbol") or SYMBOL
+        position_action = str(data.get("position_action") or "open").lower()
+        is_duplicate = bool(data.get("is_duplicate"))
+        
+        logger.info(f"⚡ Processing queued execution [{signal_id}]: {direction} ({position_action})")
+        
+        if is_duplicate or position_action == "ignore":
+            result = {
+                "status": "skipped",
+                "reason": data.get("position_action_reason") or "Signal suppressed by position manager",
+            }
+        elif position_action == "close":
+            result = close_positions_for_symbol(
+                effective_symbol,
+                close_reason="position_manager_close",
+                db=db,
+            )
+        elif direction not in ("BUY", "SELL"):
+            result = {"status": "skipped", "reason": "HOLD signal"}
+        elif position_action == "reverse":
+            close_result = close_positions_for_symbol(
+                effective_symbol,
+                close_reason="position_manager_reverse",
+                db=db,
+            )
+            if close_result.get("status") == "error":
                 result = {
-                    "status": "skipped",
-                    "reason": data.get("position_action_reason") or "Signal suppressed by position manager",
+                    "status": "error",
+                    "reason": close_result.get("reason") or "Reverse failed during close step",
+                    "closed_tickets": close_result.get("closed_tickets", []),
                 }
-            elif position_action == "close":
-                result = close_positions_for_symbol(
-                    effective_symbol,
-                    close_reason="position_manager_close",
-                    db=db,
-                )
-            elif direction not in ("BUY", "SELL"):
-                result = {"status": "skipped", "reason": "HOLD signal"}
-            elif position_action == "reverse":
-                close_result = close_positions_for_symbol(
-                    effective_symbol,
-                    close_reason="position_manager_reverse",
-                    db=db,
-                )
-                if close_result.get("status") == "error":
-                    result = {
-                        "status": "error",
-                        "reason": close_result.get("reason") or "Reverse failed during close step",
-                        "closed_tickets": close_result.get("closed_tickets", []),
-                    }
-                else:
-                    result = place_order(data, risk_manager=risk_manager)
-                    if close_result.get("closed_tickets"):
-                        result["closed_tickets"] = close_result["closed_tickets"]
             else:
                 result = place_order(data, risk_manager=risk_manager)
+                if close_result.get("closed_tickets"):
+                    result["closed_tickets"] = close_result["closed_tickets"]
+        else:
+            result = place_order(data, risk_manager=risk_manager)
 
-            logger.info(f"   Execution result: {result}")
+        logger.info(f"   Execution result: {result}")
 
-            if result.get("status") == "blocked" and db and db.is_enabled():
+        if result.get("status") == "blocked" and db and db.is_enabled():
+            def _log_risk():
                 try:
                     db.log_risk_event(
                         event_type="POSITION_BLOCKED",
@@ -544,8 +587,11 @@ async def command_receiver(ws, auto_trade: bool):
                     )
                 except Exception as e:
                     logger.error(f"Failed to log risk event: {e}")
+            
+            asyncio.get_running_loop().run_in_executor(None, _log_risk)
 
-            if result.get("status") == "ok" and db and db.is_enabled():
+        if result.get("status") == "ok" and db and db.is_enabled():
+            def _save_order():
                 try:
                     signal_context = {
                         "analysis_batch_id": data.get("analysis_batch_id"),
@@ -592,130 +638,79 @@ async def command_receiver(ws, auto_trade: bool):
                 except Exception as e:
                     logger.error(f"Failed to save order to database: {e}")
 
-            _update_position_decision_execution(signal_id, result, db=db)
+            asyncio.get_running_loop().run_in_executor(None, _save_order)
 
-            ack = {
-                "type": "ACK",
-                "signal_id": signal_id,
-                "status": result.get("status"),
-                "ticket": result.get("ticket"),
-                "price": result.get("price") or result.get("close_price"),
-                "message": result.get("comment") or result.get("reason") or result.get("message", ""),
-            }
-            await ws.send(json.dumps(ack))
+        _update_position_decision_execution(signal_id, result, db=db)
 
-            if result.get("status") == "ok":
-                logger.info(f"   Order #{result.get('ticket')} placed @ {result.get('price')}")
-            elif result.get("status") == "closed":
-                logger.info(f"   {ack.get('message')}")
-            elif result.get("status") in {"blocked", "skipped"}:
-                logger.warning(f"   {ack.get('message')}")
-            else:
-                logger.error(f"   Order failed: {result}")
-            continue
+        ack = {
+            "type": "ACK",
+            "signal_id": signal_id,
+            "status": result.get("status"),
+            "ticket": result.get("ticket"),
+            "price": result.get("price") or result.get("close_price"),
+            "message": result.get("comment") or result.get("reason") or result.get("message", ""),
+        }
+        await ws.send(json.dumps(ack))
 
-            if action == "PLACE_ORDER":
-                if direction in ("BUY", "SELL"):
-                    if auto_trade:
-                        result = place_order(data, risk_manager=risk_manager)
-                        logger.info(f"   Execution result: {result}")
-                        
-                        # Log risk event if blocked
-                        if result.get("status") == "blocked" and db and db.is_enabled():
-                            try:
-                                db.log_risk_event(
-                                    event_type="POSITION_BLOCKED",
-                                    description=result.get("reason", "Unknown"),
-                                    action_taken="Order rejected",
-                                    metadata={"signal_id": signal_id, "direction": direction},
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to log risk event: {e}")
-                        
-                        # Save order to database if successful
-                        if result.get("status") == "ok" and db and db.is_enabled():
-                            try:
-                                signal_context = {
-                                    "analysis_batch_id": data.get("analysis_batch_id"),
-                                    "setup_type": data.get("setup_type"),
-                                    "trading_style": data.get("trading_style"),
-                                    "market_regime": data.get("market_regime"),
-                                    "regime_at_signal": data.get("market_regime"),
-                                    "regime_confidence_at_signal": (data.get("evidence") or {}).get("regime_alignment"),
-                                    "session_at_signal": data.get("session_label") or "off",
-                                    "volatility_bucket_at_signal": data.get("volatility_bucket"),
-                                    "spread_at_signal": result.get("spread"),
-                                    "actual_spread": result.get("spread"),
-                                    "slippage_points": result.get("slippage_points"),
-                                    "intended_entry_price": float(data.get("entry_price") or 0.0),
-                                    "intended_stop_loss": float(data.get("stop_loss") or 0.0),
-                                    "intended_take_profit_1": float(data.get("take_profit_1") or 0.0),
-                                    "data_source_at_signal": data.get("source"),
-                                    "compression_ratio_at_entry": (data.get("evidence") or {}).get("compression_ratio"),
-                                    "efficiency_ratio_at_entry": (data.get("evidence") or {}).get("efficiency_ratio"),
-                                    "close_location_at_entry": (data.get("evidence") or {}).get("close_location"),
-                                    "body_strength_at_entry": (data.get("evidence") or {}).get("body_strength"),
-                                }
-                                db.save_order(
-                                    signal_id=signal_id,
-                                    ticket=result.get("ticket"),
-                                    direction=direction,
-                                    entry_price=result.get("price"),
-                                    stop_loss=float(data.get("stop_loss")),
-                                    take_profit=float(data.get("take_profit_1")),
-                                    lot_size=result.get("lot_size", float(data.get("lot", DEFAULT_LOT))),
-                                    magic_number=MAGIC_NUMBER,
-                                    comment="Midas AI Signal",
-                                    symbol=data.get("symbol") or SYMBOL,
-                                    analysis_batch_id=data.get("analysis_batch_id"),
-                                    setup_type=data.get("setup_type"),
-                                    signal_context=signal_context,
-                                    entry_spread=result.get("spread"),
-                                    slippage_points=result.get("slippage_points"),
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to save order to database: {e}")
-                        
-                        # Send acknowledgment back to backend
-                        ack = {
-                            "type": "ACK",
-                            "signal_id": signal_id,
-                            "status": result.get("status"),
-                            "ticket": result.get("ticket"),
-                            "price": result.get("price"),
-                            "message": result.get("comment") or result.get("reason", ""),
-                        }
-                        await ws.send(json.dumps(ack))
-                        
-                        if result.get("status") == "ok":
-                            logger.info(f"   ✅ Order #{result.get('ticket')} placed @ {result.get('price')}")
-                        elif result.get("status") == "blocked":
-                            logger.warning(f"   🚫 Order blocked: {result.get('reason')}")
-                        else:
-                            logger.error(f"   ❌ Order failed: {result}")
-                    else:
-                        logger.warning("   ⚠️  Auto-trade is OFF — restart with --auto-trade to execute orders")
-                        # Send ACK even when auto-trade is off
-                        await ws.send(json.dumps({
-                            "type": "ACK",
-                            "signal_id": signal_id,
-                            "status": "skipped",
-                            "message": "Auto-trade is disabled",
-                        }))
-                else:
-                    logger.info("   HOLD signal — no order placed.")
-                    await ws.send(json.dumps({
-                        "type": "ACK",
-                        "signal_id": signal_id,
-                        "status": "skipped",
-                        "message": "HOLD signal",
-                    }))
-
-        except json.JSONDecodeError:
-            logger.warning("Received non-JSON message, ignoring.")
+        if result.get("status") == "ok":
+            logger.info(f"   ✅ Order #{result.get('ticket')} placed @ {result.get('price')}")
+        elif result.get("status") == "closed":
+            logger.info(f"   {ack.get('message')}")
+        elif result.get("status") in {"blocked", "skipped"}:
+            logger.warning(f"   🚫 {ack.get('message')}")
+        else:
+            logger.error(f"   ❌ Order failed: {result}")
+            
+        execution_queue.task_done()
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
+async def command_receiver(ws, auto_trade: bool):
+    async for raw in ws:
+        try:
+            payload = json.loads(raw)
+            if payload.get("type") != "SIGNAL":
+                continue
+
+            data = payload.get("data", {})
+            signal_id = data.get("signal_id", "unknown")
+            direction = str(data.get("direction", "HOLD")).upper()
+            action = payload.get("action")
+
+            logger.info(f"📡 Signal received [{signal_id}] ({action}): {direction} | confidence {data.get('confidence')}%")
+
+            if action != "PLACE_ORDER":
+                logger.debug("   Display-only signal; no MT5 order requested.")
+                continue
+
+            if not auto_trade:
+                logger.warning("   Auto-trade is OFF - restart with --auto-trade to execute orders")
+                await ws.send(json.dumps({
+                    "type": "ACK",
+                    "signal_id": signal_id,
+                    "status": "skipped",
+                    "message": "Auto-trade is disabled",
+                }))
+                continue
+            
+            await execution_queue.put({"action": action, "data": data})
+        except Exception as e:
+            logger.error(f"Error processing command: {e}")
+
+async def candle_sender(ws):
+    while True:
+        for tf_name, tf_val in CANDLE_TIMEFRAMES.items():
+            candles = _fetch_candles(SYMBOL, tf_name)
+            if candles:
+                payload = {
+                    "type": "CANDLES",
+                    "data": {
+                        "symbol": SYMBOL,
+                        "timeframe": tf_name,
+                        "candles": candles,
+                    },
+                }
+                await ws.send(json.dumps(payload))
+        await asyncio.sleep(CANDLE_PUSH_INTERVAL)
 
 if __name__ == "__main__":
     # Default: auto-trade ON if credentials are configured, OFF otherwise
@@ -756,7 +751,10 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(run(auto_trade=auto_trade))
-    except KeyboardInterrupt:
-        logger.info("Bridge stopped.")
+    except asyncio.CancelledError:
+        logger.info("Shutdown requested via task cancellation.")
+        raise
+    except Exception as e:
+        logger.error(f"Bridge crashed: {e}")
     finally:
         mt5.shutdown()

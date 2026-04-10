@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -143,7 +144,16 @@ class MarketDataService:
         current_price: float | None = None
 
         for timeframe, lookback in zip(config["timeframes"], config["lookback"]):
-            source_result = await loop.run_in_executor(None, fetch_candles, target_symbol, timeframe, lookback)
+            live_required = style == "Scalper"
+            source_result = await loop.run_in_executor(
+                None,
+                lambda tf=timeframe, lb=lookback: fetch_candles(
+                    target_symbol,
+                    tf,
+                    lb,
+                    live_required=live_required,
+                ),
+            )
             if source_result is None:
                 logger.warning(f"  {timeframe}: no candle source available")
                 continue
@@ -213,7 +223,7 @@ class MarketDataService:
             current_price_source=current_price_source,
             generated_at=generated_at,
             data_quality=data_quality,
-            effective_auto_execute_confidence=float(config["auto_execute_confidence"]),
+            effective_auto_execute_confidence=float(os.getenv("AUTO_EXECUTE_MIN_CONFIDENCE", str(config["auto_execute_confidence"]))),
             session_label=self._session_label(generated_at),
         )
 
@@ -280,6 +290,13 @@ class SignalRankingService:
 
     @staticmethod
     def build_no_data_batch(context: AnalysisContext) -> AnalysisBatch:
+        live_only_mode = context.trading_style == "Scalper"
+        reason_code = "no_live_primary_data" if live_only_mode else "insufficient_candle_data"
+        reason_message = (
+            "Live MT5 candles were unavailable for the configured scalper timeframes."
+            if live_only_mode
+            else "No usable candle datasets were available for the configured primary timeframe."
+        )
         hold = TradeSignal(
             symbol=context.symbol,
             direction="HOLD",
@@ -288,7 +305,11 @@ class SignalRankingService:
             take_profit_1=context.current_price,
             take_profit_2=context.current_price,
             confidence=0,
-            reasoning="No trade: insufficient candle data from MT5 and fallback sources.",
+            reasoning=(
+                "No trade: live MT5 candle feed is unavailable for scalper execution."
+                if live_only_mode
+                else "No trade: insufficient candle data from MT5 and fallback sources."
+            ),
             trading_style=context.trading_style,  # type: ignore[arg-type]
             setup_type="no_data",
             market_regime="unknown",
@@ -301,8 +322,8 @@ class SignalRankingService:
             source="unavailable",
             no_trade_reasons=[
                 {
-                    "code": "insufficient_candle_data",
-                    "message": "No usable candle datasets were available for the configured primary timeframe.",
+                    "code": reason_code,
+                    "message": reason_message,
                     "blocking": True,
                 }
             ],
@@ -621,6 +642,7 @@ class SignalRankingService:
 class SignalPublisher:
     def __init__(self, websocket_manager: Any) -> None:
         self.manager = websocket_manager
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def persist_and_broadcast(self, batch: AnalysisBatch, context: AnalysisContext) -> AnalysisBatch:
         provider, api_key = runtime_state.get_ai_preferences()
@@ -629,29 +651,25 @@ class SignalPublisher:
 
         primary_tf = context.config["timeframes"][0]
         ff = ForexFactoryService()
-        calendar_events = ff.get_weekly_events()[:5]
-        primary_snapshot = context.snapshots[primary_tf]
-        primary_row = context.datasets[primary_tf][1].iloc[-1]
+        try:
+            calendar_events = ff.get_weekly_events()[:5]
+        except Exception as exc:
+            logger.warning(f"Calendar fetch failed during publish: {exc}")
+            calendar_events = []
+
+        primary_snapshot = context.snapshots.get(primary_tf)
+        primary_dataset = context.datasets.get(primary_tf)
+        primary_row = primary_dataset[1].iloc[-1] if primary_dataset else None
         indicators = {
-            "RSI_14": round(float(primary_row.get("RSI_14", 50.0)), 2),
-            "MACD_12_26_9": round(float(primary_row.get("MACDh_12_26_9", 0.0)), 4),
-            "ATRr_14": round(float(primary_row.get("ATRr_14", getattr(primary_snapshot, "atr", 0.0))), 2),
-            "EMA_9": round(float(primary_row.get("EMA_9", 0.0)), 2),
-            "EMA_21": round(float(primary_row.get("EMA_21", 0.0)), 2),
-            "EMA_50": round(float(primary_row.get("EMA_50", 0.0)), 2),
+            "RSI_14": round(float(primary_row.get("RSI_14", 50.0)), 2) if primary_row is not None else 50.0,
+            "MACD_12_26_9": round(float(primary_row.get("MACDh_12_26_9", 0.0)), 4) if primary_row is not None else 0.0,
+            "ATRr_14": round(float(primary_row.get("ATRr_14", getattr(primary_snapshot, "atr", 0.0))), 2) if primary_row is not None else round(float(getattr(primary_snapshot, "atr", 0.0) or 0.0), 2),
+            "EMA_9": round(float(primary_row.get("EMA_9", 0.0)), 2) if primary_row is not None else 0.0,
+            "EMA_21": round(float(primary_row.get("EMA_21", 0.0)), 2) if primary_row is not None else 0.0,
+            "EMA_50": round(float(primary_row.get("EMA_50", 0.0)), 2) if primary_row is not None else 0.0,
             "symbol": context.symbol,
         }
-        trend = getattr(primary_snapshot, "regime", "neutral").upper()
-
-        if api_key and batch.primary.direction in ("BUY", "SELL"):
-            try:
-                batch = await AITradingEngine.explain_batch_with_fallback(
-                    batch=batch,
-                    primary_provider=provider,
-                    primary_api_key=api_key,
-                )
-            except Exception as exc:
-                logger.error(f"AI batch explanation failed: {exc}")
+        trend = getattr(primary_snapshot, "regime", batch.market_regime or "neutral").upper()
 
         execution_tradeable = True if not context.execution_adjustment else bool(context.execution_adjustment.tradeable)
         primary_should_auto_execute = (
@@ -669,6 +687,13 @@ class SignalPublisher:
             and not bool(context.kill_switch_decision and (context.kill_switch_decision.halt_trading or context.kill_switch_decision.require_manual_approval))
             and execution_tradeable
         )
+
+        if primary_should_auto_execute:
+            position_manager = get_position_manager()
+            position_manager.mark_signal_emitted(
+                batch.primary.symbol or context.symbol,
+                batch.primary.direction,
+            )
 
         position_manager = get_position_manager()
         for signal in [batch.primary, *batch.backups]:
@@ -728,63 +753,95 @@ class SignalPublisher:
             }
         )
 
-        primary_snapshot_payload = context.snapshots[primary_tf]
-        await self.manager.broadcast_json(
-            {
-                "type": "MARKET_STATE",
-                "data": {
-                    "timeframe": primary_snapshot_payload.timeframe,
-                    "source": primary_snapshot_payload.source,
-                    "is_live": primary_snapshot_payload.is_live,
-                    "current_price": round(primary_snapshot_payload.current_price, 2),
-                    "atr": round(primary_snapshot_payload.atr, 2),
-                    "avg_body": round(primary_snapshot_payload.avg_body, 2),
-                    "body_strength": round(primary_snapshot_payload.body_strength, 3),
-                    "upper_wick": round(primary_snapshot_payload.upper_wick, 2),
-                    "lower_wick": round(primary_snapshot_payload.lower_wick, 2),
-                    "close_location": round(primary_snapshot_payload.close_location, 3),
-                    "relative_volume": round(primary_snapshot_payload.relative_volume, 3),
-                    "efficiency_ratio": round(primary_snapshot_payload.efficiency_ratio, 3),
-                    "compression_ratio": round(primary_snapshot_payload.compression_ratio, 3),
-                    "ema_slope": round(primary_snapshot_payload.ema_slope, 4),
-                    "range_high": round(primary_snapshot_payload.range_high, 2),
-                    "range_low": round(primary_snapshot_payload.range_low, 2),
-                    "range_width": round(primary_snapshot_payload.range_width, 2),
-                    "boundary_touches_high": primary_snapshot_payload.boundary_touches_high,
-                    "boundary_touches_low": primary_snapshot_payload.boundary_touches_low,
-                    "recent_high": round(primary_snapshot_payload.recent_high, 2),
-                    "recent_low": round(primary_snapshot_payload.recent_low, 2),
-                    "support": round(primary_snapshot_payload.support, 2),
-                    "resistance": round(primary_snapshot_payload.resistance, 2),
-                    "recent_minor_high": round(primary_snapshot_payload.recent_minor_high, 2),
-                    "prior_minor_high": round(primary_snapshot_payload.prior_minor_high, 2),
-                    "recent_minor_low": round(primary_snapshot_payload.recent_minor_low, 2),
-                    "prior_minor_low": round(primary_snapshot_payload.prior_minor_low, 2),
-                    "swings": primary_snapshot_payload.swings,
-                    "regime": primary_snapshot_payload.regime,
-                    "regime_confidence": round(primary_snapshot_payload.regime_confidence, 1),
-                    "regime_stability": round(primary_snapshot_payload.regime_stability, 2),
-                    "regime_history": primary_snapshot_payload.regime_history,
-                    "phase_key": batch.engine_insight.phase.key if batch.engine_insight else None,
-                    "phase_label": batch.engine_insight.phase.label if batch.engine_insight else None,
-                    "phase_description": batch.engine_insight.phase.description if batch.engine_insight else None,
-                    "notes": primary_snapshot_payload.notes,
-                    "data_age_seconds": context.data_quality.age_seconds if context.data_quality else None,
-                    "freshness_passed": context.data_quality.freshness_passed if context.data_quality else None,
-                    "allowed_strategy_class": context.data_quality.allowed_strategy_class if context.data_quality else None,
-                    "kill_switch": {
-                        "halt_trading": bool(context.kill_switch_decision.halt_trading) if context.kill_switch_decision else False,
-                        "require_manual_approval": bool(context.kill_switch_decision.require_manual_approval) if context.kill_switch_decision else False,
-                        "size_multiplier": float(context.kill_switch_decision.size_multiplier) if context.kill_switch_decision else 1.0,
-                        "reasons": list(context.kill_switch_decision.reasons) if context.kill_switch_decision else [],
+        if primary_snapshot is not None:
+            await self.manager.broadcast_json(
+                {
+                    "type": "MARKET_STATE",
+                    "data": {
+                        "timeframe": primary_snapshot.timeframe,
+                        "source": primary_snapshot.source,
+                        "is_live": primary_snapshot.is_live,
+                        "current_price": round(primary_snapshot.current_price, 2),
+                        "atr": round(primary_snapshot.atr, 2),
+                        "avg_body": round(primary_snapshot.avg_body, 2),
+                        "body_strength": round(primary_snapshot.body_strength, 3),
+                        "upper_wick": round(primary_snapshot.upper_wick, 2),
+                        "lower_wick": round(primary_snapshot.lower_wick, 2),
+                        "close_location": round(primary_snapshot.close_location, 3),
+                        "relative_volume": round(primary_snapshot.relative_volume, 3),
+                        "efficiency_ratio": round(primary_snapshot.efficiency_ratio, 3),
+                        "compression_ratio": round(primary_snapshot.compression_ratio, 3),
+                        "ema_slope": round(primary_snapshot.ema_slope, 4),
+                        "range_high": round(primary_snapshot.range_high, 2),
+                        "range_low": round(primary_snapshot.range_low, 2),
+                        "range_width": round(primary_snapshot.range_width, 2),
+                        "boundary_touches_high": primary_snapshot.boundary_touches_high,
+                        "boundary_touches_low": primary_snapshot.boundary_touches_low,
+                        "recent_high": round(primary_snapshot.recent_high, 2),
+                        "recent_low": round(primary_snapshot.recent_low, 2),
+                        "support": round(primary_snapshot.support, 2),
+                        "resistance": round(primary_snapshot.resistance, 2),
+                        "recent_minor_high": round(primary_snapshot.recent_minor_high, 2),
+                        "prior_minor_high": round(primary_snapshot.prior_minor_high, 2),
+                        "recent_minor_low": round(primary_snapshot.recent_minor_low, 2),
+                        "prior_minor_low": round(primary_snapshot.prior_minor_low, 2),
+                        "swings": primary_snapshot.swings,
+                        "regime": primary_snapshot.regime,
+                        "regime_confidence": round(primary_snapshot.regime_confidence, 1),
+                        "regime_stability": round(primary_snapshot.regime_stability, 2),
+                        "regime_history": primary_snapshot.regime_history,
+                        "phase_key": batch.engine_insight.phase.key if batch.engine_insight else None,
+                        "phase_label": batch.engine_insight.phase.label if batch.engine_insight else None,
+                        "phase_description": batch.engine_insight.phase.description if batch.engine_insight else None,
+                        "notes": primary_snapshot.notes,
+                        "data_age_seconds": context.data_quality.age_seconds if context.data_quality else None,
+                        "freshness_passed": context.data_quality.freshness_passed if context.data_quality else None,
+                        "allowed_strategy_class": context.data_quality.allowed_strategy_class if context.data_quality else None,
+                        "kill_switch": {
+                            "halt_trading": bool(context.kill_switch_decision.halt_trading) if context.kill_switch_decision else False,
+                            "require_manual_approval": bool(context.kill_switch_decision.require_manual_approval) if context.kill_switch_decision else False,
+                            "size_multiplier": float(context.kill_switch_decision.size_multiplier) if context.kill_switch_decision else 1.0,
+                            "reasons": list(context.kill_switch_decision.reasons) if context.kill_switch_decision else [],
+                        },
+                        "symbol": context.symbol,
+                        "trading_style": context.trading_style,
+                        "context_summary": batch.context_summary,
                     },
-                    "symbol": context.symbol,
-                    "trading_style": context.trading_style,
-                    "context_summary": batch.context_summary,
-                },
-            }
-        )
+                }
+            )
+
+        if api_key and batch.primary.direction in ("BUY", "SELL") and getattr(batch.primary, "signal_id", None) not in {None, "db_disabled", "error"}:
+            task = asyncio.create_task(self._async_explain_and_update(batch, provider, api_key, batch.primary.signal_id))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
         return batch
+
+    async def _async_explain_and_update(self, batch: AnalysisBatch, provider: str, api_key: str, signal_id: str):
+        try:
+            explained_batch = await AITradingEngine.explain_batch_with_fallback(
+                batch=batch,
+                primary_provider=provider,
+                primary_api_key=api_key,
+            )
+            reasoning = explained_batch.primary.reasoning
+            from app.services.repositories import signal_repository
+            signal_repository.update_reasoning(
+                signal_id=signal_id,
+                reasoning=reasoning,
+                ai_provider=provider,
+                ai_model="bounded-explainer"
+            )
+            
+            await self.manager.broadcast_json({
+                "type": "SIGNAL_UPDATE",
+                "data": {
+                    "id": signal_id,
+                    "reasoning": reasoning
+                }
+            })
+        except Exception as exc:
+            logger.error(f"Async AI explanation failed: {exc}")
 
 
 class TradingEngine:
@@ -996,7 +1053,9 @@ class TradingEngine:
             risk_blocked=risk_blocked,
         )
         context.transition_penalty_active = transition_penalty_active
-        context.effective_auto_execute_confidence = float(context.config["auto_execute_confidence"]) * (1.2 if transition_penalty_active else 1.0)
+        base_auto_execute_confidence = float(
+            os.getenv("AUTO_EXECUTE_MIN_CONFIDENCE", str(context.config["auto_execute_confidence"]))
+        )
         primary_tf = context.config["timeframes"][0]
         setup_book = RankedSetupBook()
         if primary_tf not in context.datasets:
@@ -1004,6 +1063,12 @@ class TradingEngine:
         else:
             primary_snapshot = context.snapshots[primary_tf]
             context.regime_hierarchy = get_regime_hierarchy(primary_snapshot.regime, primary_snapshot)
+            transition_multiplier = 1.05 if transition_penalty_active else 1.0
+            regime_threshold_cap = max(50.0, (context.regime_hierarchy.confidence_cap * 100.0) - 4.0)
+            context.effective_auto_execute_confidence = min(
+                base_auto_execute_confidence * transition_multiplier,
+                regime_threshold_cap,
+            )
             allowed_detectors = get_allowed_detectors(context.regime_hierarchy)
             if context.regime_hierarchy.primary == "compression" and primary_snapshot.regime_stability >= 0.67:
                 confidence_cap_override = 99.0
@@ -1072,7 +1137,7 @@ class TradingEngine:
             context_summary=summary,
         )
 
-        if publish and not bool(context.kill_switch_decision and context.kill_switch_decision.halt_trading):
+        if publish:
             batch = await self.publisher.persist_and_broadcast(batch, context)
 
         return AnalysisBatchResponse(status="ok", data=batch, context=summary)

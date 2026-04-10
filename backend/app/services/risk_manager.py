@@ -6,7 +6,10 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 

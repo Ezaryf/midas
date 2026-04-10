@@ -13,14 +13,24 @@ class MarketRegime(str, Enum):
 
 REGIME_DETECTOR_MATRIX: dict[tuple[str, str], dict[str, float | bool | list[str]]] = {
     ("trend", "bullish"): {
-        "allowed": ["breakout_continuation", "pullback_continuation", "demand_zone_reaction"],
+        "allowed": [
+            "breakout_continuation",
+            "pullback_continuation",
+            "demand_zone_reaction",
+            "micro_scalp_long",
+        ],
         "confidence_boost": 1.15,
         "confidence_cap": 1.0,
         "force_hold": False,
         "max_position_size": 1.0,
     },
     ("trend", "bearish"): {
-        "allowed": ["breakdown_retest", "lower_high_failure", "supply_zone_reaction"],
+        "allowed": [
+            "breakdown_retest",
+            "lower_high_failure",
+            "supply_zone_reaction",
+            "micro_scalp_short",
+        ],
         "confidence_boost": 1.15,
         "confidence_cap": 1.0,
         "force_hold": False,
@@ -32,6 +42,8 @@ REGIME_DETECTOR_MATRIX: dict[tuple[str, str], dict[str, float | bool | list[str]
             "range_reversion_short",
             "exhaustion_reversal_long",
             "exhaustion_reversal_short",
+            "micro_scalp_long",
+            "micro_scalp_short",
         ],
         "confidence_boost": 1.0,
         "confidence_cap": 0.80,
@@ -39,24 +51,55 @@ REGIME_DETECTOR_MATRIX: dict[tuple[str, str], dict[str, float | bool | list[str]
         "max_position_size": 1.0,
     },
     ("compression", "bullish"): {
-        "allowed": ["breakout_continuation"],
+        "allowed": [
+            "breakout_continuation",
+            "micro_scalp_long",
+            "demand_zone_reaction",
+        ],
         "confidence_boost": 1.0,
         "confidence_cap": 0.85,
         "force_hold": False,
         "max_position_size": 0.75,
     },
     ("compression", "bearish"): {
-        "allowed": ["breakdown_retest"],
+        "allowed": [
+            "breakdown_retest",
+            "micro_scalp_short",
+            "supply_zone_reaction",
+        ],
         "confidence_boost": 1.0,
         "confidence_cap": 0.85,
         "force_hold": False,
         "max_position_size": 0.75,
     },
-    ("transition", "neutral"): {
-        "allowed": [],
+    ("compression", "neutral"): {
+        "allowed": [
+            "breakout_continuation",
+            "breakdown_retest",
+            "range_reversion_long",
+            "range_reversion_short",
+            "micro_scalp_long",
+            "micro_scalp_short",
+            "exhaustion_reversal_long",
+            "exhaustion_reversal_short",
+            "demand_zone_reaction",
+            "supply_zone_reaction",
+        ],
         "confidence_boost": 1.0,
-        "confidence_cap": 0.50,
-        "force_hold": True,
+        "confidence_cap": 0.75,
+        "force_hold": False,
+        "max_position_size": 0.5,
+    },
+    ("transition", "neutral"): {
+        "allowed": [
+            "exhaustion_reversal_long",
+            "exhaustion_reversal_short",
+            "micro_scalp_long",
+            "micro_scalp_short",
+        ],
+        "confidence_boost": 1.0,
+        "confidence_cap": 0.75,
+        "force_hold": False,
         "max_position_size": 0.25,
     },
 }
@@ -71,6 +114,7 @@ class RegimeHierarchy:
     confidence_cap: float = 1.0
     force_hold: bool = False
     max_position_size: float = 1.0
+    fallback_override_threshold: float = 85.0
 
 
 def _normalized_primary(regime: str, compression_ratio: float) -> str:
@@ -116,11 +160,16 @@ def get_regime_hierarchy(regime: str, snapshot) -> RegimeHierarchy:
         REGIME_DETECTOR_MATRIX.get((primary, secondary))
         or REGIME_DETECTOR_MATRIX.get((primary, "neutral"))
         or {
-            "allowed": [],
+            "allowed": [
+                "exhaustion_reversal_long",
+                "exhaustion_reversal_short",
+                "micro_scalp_long",
+                "micro_scalp_short",
+            ],
             "confidence_boost": 1.0,
-            "confidence_cap": 0.75,
-            "force_hold": primary == MarketRegime.TRANSITION.value,
-            "max_position_size": 0.5 if primary == MarketRegime.TRANSITION.value else 1.0,
+        "confidence_cap": 0.75,
+            "force_hold": False,
+            "max_position_size": 0.25,
         }
     )
     return RegimeHierarchy(

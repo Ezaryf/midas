@@ -12,7 +12,75 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+
+class PositionMonitorConfig:
+    """Position monitoring configuration"""
+    def __init__(self):
+        # Partial close settings
+        self.partial_close_enabled = os.getenv("PARTIAL_CLOSE_ENABLED", "true").lower() == "true"
+        self.partial_close_percent = float(os.getenv("PARTIAL_CLOSE_PERCENT", "50.0"))  # 50%
+        
+        # Break-even settings
+        self.breakeven_enabled = os.getenv("BREAKEVEN_ENABLED", "true").lower() == "true"
+        self.breakeven_buffer_pips = float(os.getenv("BREAKEVEN_BUFFER_PIPS", "5.0"))  # 5 pips above BE
+        
+        # Trailing stop settings
+        self.trailing_stop_enabled = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
+        self.trailing_stop_distance_pips = float(os.getenv("TRAILING_STOP_DISTANCE_PIPS", "50.0"))
+        self.trailing_stop_step_pips = float(os.getenv("TRAILING_STOP_STEP_PIPS", "10.0"))
+        
+        # Time-based exit settings
+        self.time_exit_enabled = os.getenv("TIME_EXIT_ENABLED", "true").lower() == "true"
+        self.exit_before_news_minutes = int(os.getenv("EXIT_BEFORE_NEWS_MINUTES", "15"))
+        self.exit_before_weekend_hours = int(os.getenv("EXIT_BEFORE_WEEKEND_HOURS", "2"))
+        
+        # Monitoring interval
+        self.monitor_interval_seconds = float(os.getenv("MONITOR_INTERVAL_SECONDS", "1.0"))
+
+
+class PositionMonitor:
+    """
+    Monitors and manages open positions automatically.
+    Runs as a background task in the MT5 bridge.
+    """
+    
+    def __init__(self, config: Optional[PositionMonitorConfig] = None, magic_number: int = 20250101):
+        self.config = config or PositionMonitorConfig()
+        self.magic_number = magic_number
+        self.running = False
+        self._task: Optional[asyncio.Task] = None
+        
+        # Track which positions have been modified
+        self._partial_closed: set[int] = set()  # ticket numbers
+        self._breakeven_set: set[int] = set()
+        self._trailing_active: dict[int, float] = {}  # ticket -> last trailing SL
+        
+        logger.info("Position Monitor initialized:")
+        logger.info(f"  Partial close: {self.config.partial_close_enabled} ({self.config.partial_close_percent}%)")
+        logger.info(f"  Break-even: {self.config.breakeven_enabled}")
+        logger.info(f"  Trailing stop: {self.config.trailing_stop_enabled}")
+        logger.info(f"  Time exits: {self.config.time_exit_enabled}")
+    
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    
+    def start(self):
+        """Start monitoring positions"""
+        if self.running:
+            logger.warning("Position monitor already running")
+            return
+        
+        self.running = True
+        self._task = asyncio.create_task(self._monitor_loop())
+        logger.info("✅ Position monitor started")
+    
+    mt5 = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +153,9 @@ class PositionMonitor:
         self.running = False
         if self._task:
             self._task.cancel()
-            try:
+            import contextlib
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass  # Task was cancelled - that's fine on shutdown
         
         logger.info("Position monitor stopped")
     
@@ -118,14 +185,14 @@ class PositionMonitor:
         positions = mt5.positions_get(magic=self.magic_number)
         if not positions:
             return
-        
+            
         for pos in positions:
             try:
-                await self._check_position(pos)
+                self._check_position(pos)
             except Exception as e:
                 logger.error(f"Error checking position #{pos.ticket}: {e}")
-    
-    async def _check_position(self, pos):
+                
+    def _check_position(self, pos):
         """Check a single position and apply management rules"""
         ticket = pos.ticket
         symbol = pos.symbol

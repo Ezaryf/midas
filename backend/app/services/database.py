@@ -33,6 +33,8 @@ def _json_dumps(value):
 
 def _parse_mysql_url(url: str) -> dict:
     """Parse mysql://user:pass@host:port/database into connection kwargs."""
+    from urllib.parse import unquote
+
     # mysql://user:password@host:port/database
     url = url.strip()
     if url.startswith("mysql://"):
@@ -49,6 +51,9 @@ def _parse_mysql_url(url: str) -> dict:
     host_db = url[at_idx + 1:]
 
     user, password = user_pass.split(":", 1) if ":" in user_pass else (user_pass, "")
+    # URL-decode user and password (e.g. %40 → @)
+    user = unquote(user)
+    password = unquote(password)
 
     slash_idx = host_db.find("/")
     if slash_idx == -1:
@@ -464,9 +469,6 @@ class DatabaseService:
         if not self.is_enabled():
             return "db_disabled"
 
-        if signal.direction == "HOLD":
-            return "db_disabled"
-
         conn = self._get_conn()
         if not conn:
             return "db_disabled"
@@ -481,7 +483,7 @@ class DatabaseService:
                     symbol, analysis_batch_id, trading_style, setup_type,
                     market_regime, score, `rank`, is_primary,
                     entry_window_low, entry_window_high, context_tags, source,
-                    context, indicators, current_price, trend,
+                    status, context, indicators, current_price, trend,
                     ai_provider, ai_model
                 ) VALUES (
                     %s, %s, %s, %s,
@@ -489,7 +491,7 @@ class DatabaseService:
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
                     %s, %s
                 )""",
                 (
@@ -513,10 +515,12 @@ class DatabaseService:
                     float(signal.entry_window_high) if signal.entry_window_high is not None else None,
                     _json_dumps(signal.context_tags) if signal.context_tags else None,
                     signal.source,
+                    "NO_TRADE" if signal.direction == "HOLD" else "NEW",
                     _json_dumps({
                         "regime_summary": regime_summary,
                         "context_tags": signal.context_tags,
                         "source": signal.source,
+                        "no_trade_reasons": signal.no_trade_reasons,
                         "position_action": signal.position_action,
                         "position_action_reason": signal.position_action_reason,
                         "is_duplicate": signal.is_duplicate,
@@ -581,6 +585,35 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Failed to fetch signal {signal_id}: {e}")
             return {}
+        finally:
+            conn.close()
+
+    def update_signal_reasoning(self, signal_id: str, reasoning: str, ai_provider: str, ai_model: str) -> bool:
+        """Update a signal's reasoning after asynchronous AI explanation completes."""
+        if not self.is_enabled():
+            return False
+
+        conn = self._get_conn()
+        if not conn:
+            return False
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE signals SET
+                    reasoning = %s,
+                    ai_provider = %s,
+                    ai_model = %s
+                WHERE id = %s""",
+                (reasoning, ai_provider, ai_model, signal_id),
+            )
+            conn.commit()
+            cursor.close()
+            logger.info(f"✅ AI Reasoning updated for signal {signal_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update signal reasoning for {signal_id}: {e}")
+            return False
         finally:
             conn.close()
 

@@ -2,6 +2,7 @@ import asyncio
 from collections import deque
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -154,6 +155,7 @@ async def run_analysis_cycle(trading_style: str | None = None, symbol: str | Non
     from app.services.risk_manager import get_risk_manager
     from app.services.trading_state import trading_state
 
+    cycle_started = time.perf_counter()
     style = trading_style or runtime_state.get_trading_style() or os.getenv("TRADING_STYLE", "Scalper")
     style = style.capitalize() if style.lower() in ("scalper", "intraday", "swing") else style
     if style not in STYLE_CONFIG:
@@ -203,6 +205,11 @@ async def run_analysis_cycle(trading_style: str | None = None, symbol: str | Non
         transition_penalty_active=len(RECENT_PRIMARY_REGIMES) == 3 and all(regime == "transition" for regime in RECENT_PRIMARY_REGIMES),
     )
     RECENT_PRIMARY_REGIMES.append(response.data.market_regime)
+    elapsed = time.perf_counter() - cycle_started
+    logger.info(
+        f"Analysis complete in {elapsed:.2f}s | primary={response.data.primary.direction} "
+        f"| source={response.data.source} | regime={response.data.market_regime}"
+    )
     return response.data
 
 
@@ -212,8 +219,8 @@ async def background_trading_loop():
     from app.services.trading_state import trading_state as state
 
     try:
-        style = state.trading_style or runtime_state.get_trading_style() or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
-        symbol = getattr(state, "target_symbol", None) or runtime_state.get_target_symbol() or "XAUUSD"
+        style = runtime_state.get_trading_style() or state.trading_style or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
+        symbol = runtime_state.get_target_symbol() or getattr(state, "target_symbol", None) or "XAUUSD"
         logger.info("Running forceful initial analysis on startup.")
         await run_analysis_cycle(trading_style=style, symbol=symbol)
     except Exception as exc:
@@ -236,8 +243,8 @@ async def background_trading_loop():
                 state.reset_consecutive_losses()
                 continue
 
-            style = state.trading_style or runtime_state.get_trading_style() or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
-            symbol = getattr(state, "target_symbol", None) or runtime_state.get_target_symbol() or "XAUUSD"
+            style = runtime_state.get_trading_style() or state.trading_style or manager.trading_style or os.getenv("TRADING_STYLE", "Scalper")
+            symbol = runtime_state.get_target_symbol() or getattr(state, "target_symbol", None) or "XAUUSD"
             if not is_trading_session_active(style=style, symbol=symbol):
                 logger.debug("Outside trading hours - skipping analysis")
                 continue

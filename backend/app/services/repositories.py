@@ -32,6 +32,14 @@ class SignalRepository:
             regime_summary=payload.regime_summary,
         )
 
+    def update_reasoning(self, signal_id: str, reasoning: str, ai_provider: str, ai_model: str) -> bool:
+        return db.update_signal_reasoning(
+            signal_id=signal_id,
+            reasoning=reasoning,
+            ai_provider=ai_provider,
+            ai_model=ai_model,
+        )
+
     def recent(self, limit: int = 10) -> list[Any]:
         return db.get_recent_signals(limit=limit)
 

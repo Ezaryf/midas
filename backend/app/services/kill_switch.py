@@ -28,8 +28,12 @@ class KillSwitchDecision:
 class KillSwitch:
     @classmethod
     def check(cls, context: KillSwitchContext) -> KillSwitchDecision:
+        import os
+        if os.getenv("ENABLE_KILL_SWITCH", "true").lower() in ("0", "false", "no", "off"):
+            return KillSwitchDecision()
+
         decision = KillSwitchDecision()
-        if context.data_age_seconds > 300:
+        if context.data_age_seconds > 900:
             decision.halt_trading = True
             decision.size_multiplier = 0.0
             decision.reasons.append("data_staleness")
@@ -61,18 +65,27 @@ class KillSwitch:
     def log_event(cls, *, symbol: str, decision: KillSwitchDecision, context: dict) -> None:
         if not db.is_enabled() or not decision.reasons:
             return
+
+        def _do_log():
+            try:
+                db.log_kill_switch_event(
+                    symbol=symbol,
+                    action=(
+                        "halt_trading"
+                        if decision.halt_trading
+                        else "require_manual_approval"
+                        if decision.require_manual_approval
+                        else "reduce_size"
+                    ),
+                    reasons=decision.reasons,
+                    context=context,
+                )
+            except Exception:
+                pass
+
+        import asyncio
         try:
-            db.log_kill_switch_event(
-                symbol=symbol,
-                action=(
-                    "halt_trading"
-                    if decision.halt_trading
-                    else "require_manual_approval"
-                    if decision.require_manual_approval
-                    else "reduce_size"
-                ),
-                reasons=decision.reasons,
-                context=context,
-            )
-        except Exception:
-            return
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _do_log)
+        except RuntimeError:
+            _do_log()

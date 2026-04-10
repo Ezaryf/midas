@@ -1,5 +1,12 @@
 import os
 import logging
+
+# Load .env before anything else reads os.getenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed; rely on system env vars
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +21,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize runtime_state with AI preferences from env
+    from app.services.runtime_state import runtime_state
+    ai_provider = os.getenv("AI_PROVIDER", "openai")
+    ai_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if ai_key:
+        runtime_state.set_ai_preferences(provider=ai_provider, api_key=ai_key)
+        # Also ensure os.environ has the key for fallback lookups
+        os.environ.setdefault("AI_API_KEY", ai_key)
+        os.environ.setdefault("OPENAI_API_KEY", ai_key)
+        logger.info(f"AI provider initialized: {ai_provider} (key configured)")
+    else:
+        logger.warning("No AI_API_KEY or OPENAI_API_KEY found in environment")
+
     # Start background trading loop on startup
     loop_task = asyncio.create_task(background_trading_loop())
     logger.info("Background trading loop started.")
@@ -62,13 +82,17 @@ async def health_readiness():
     """Readiness probe — checks MT5, Supabase, and AI provider connectivity."""
     checks = {}
 
-    # MT5 check
+    # Bridge-owned MT5 check
     try:
-        import MetaTrader5 as mt5
-        terminal = mt5.terminal_info()
+        from app.services.runtime_state import runtime_state
+        from app.api.ws.mt5_handler import manager
+
+        latest_candles = runtime_state.snapshot().get("latest_candles", {})
+        bridge_connected = len(manager.active_connections) > 0
         checks["mt5"] = {
-            "status": "ok" if terminal else "unavailable",
-            "connected": terminal is not None,
+            "status": "ok" if bridge_connected and latest_candles else "degraded" if bridge_connected else "unavailable",
+            "connected": bridge_connected,
+            "live_candles": bool(latest_candles),
         }
     except Exception as e:
         checks["mt5"] = {"status": "error", "message": str(e)}

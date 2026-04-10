@@ -7,11 +7,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+import os
 from math import ceil
 from typing import Optional
 
 import pandas as pd
 
+from app.services.runtime_state import runtime_state
 from app.services.exchange_data import fetch_exchange_ohlcv, supports_exchange_symbol
 from app.services.technical_analysis import fetch_ohlcv as fetch_yahoo_ohlcv
 
@@ -37,6 +39,11 @@ _TIMEFRAME_MINUTES = {
     "15m": 15,
     "1h": 60,
     "4h": 240,
+}
+
+_COMMON_SYMBOL_ALIASES = {
+    "XAUUSD": ["XAUUSD", "GOLD", "GOLDUSD", "XAUUSDm", "XAUUSD."],
+    "GOLD": ["GOLD", "XAUUSD", "GOLDUSD", "XAUUSDm", "XAUUSD."],
 }
 
 
@@ -103,9 +110,57 @@ def _fetch_mt5_ohlcv(symbol: str, timeframe: str, lookback: str) -> Optional[pd.
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         df = df[["time", "open", "high", "low", "close", "volume"]]
         df.set_index("time", inplace=True)
+        df.sort_index(inplace=True)
         return df.dropna(subset=["open", "high", "low", "close"])
     except Exception as exc:
         logger.warning(f"MT5 candle fetch failed for {symbol} {timeframe}: {exc}")
+        return None
+
+
+def _candidate_symbols(symbol: str) -> list[str]:
+    requested = (symbol or "").upper()
+    candidates: list[str] = []
+    for candidate in [requested, runtime_state.get_target_symbol().upper()]:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    latest_tick = runtime_state.get_tick() or {}
+    tick_symbol = str(latest_tick.get("symbol") or "").upper()
+    if tick_symbol and tick_symbol not in candidates:
+        candidates.append(tick_symbol)
+    env_symbol = str(os.getenv("MT5_SYMBOL", "")).upper()
+    if env_symbol and env_symbol not in candidates:
+        candidates.append(env_symbol)
+    for candidate in list(candidates):
+        for alias in _COMMON_SYMBOL_ALIASES.get(candidate, []):
+            if alias not in candidates:
+                candidates.append(alias)
+    return candidates
+
+
+def _fetch_bridge_ohlcv(symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+    payload = None
+    for candidate_symbol in _candidate_symbols(symbol):
+        payload = runtime_state.get_candles(symbol=candidate_symbol, timeframe=timeframe)
+        if payload:
+            break
+    if not payload:
+        return None
+
+    candles = payload.get("candles") or []
+    if not candles:
+        return None
+
+    try:
+        df = pd.DataFrame(candles)
+        if df.empty:
+            return None
+        df["time"] = pd.to_datetime(df["time"], utc=True)
+        df = df[["time", "open", "high", "low", "close", "volume"]]
+        df.set_index("time", inplace=True)
+        df.sort_index(inplace=True)
+        return df.dropna(subset=["open", "high", "low", "close"])
+    except Exception as exc:
+        logger.warning(f"Bridge candle cache decode failed for {symbol} {timeframe}: {exc}")
         return None
 
 
@@ -160,11 +215,24 @@ def _build_result(
     )
 
 
-def fetch_candles(symbol: str, timeframe: str, lookback: str) -> Optional[CandleSourceResult]:
+def fetch_candles(symbol: str, timeframe: str, lookback: str, *, live_required: bool = False) -> Optional[CandleSourceResult]:
     """
     Fetch candles from the best available source.
     MT5 is preferred because it is live and uses the broker symbol's actual volume profile.
     """
+    bridge_df = _fetch_bridge_ohlcv(symbol, timeframe)
+    if bridge_df is not None and len(bridge_df) >= 50:
+        return _build_result(
+            df=bridge_df,
+            symbol=symbol,
+            timeframe=timeframe,
+            lookback=lookback,
+            source="bridge-mt5",
+            is_live=True,
+            confidence_cap=98.0,
+            notes=["live_source", "bridge_cache"],
+        )
+
     mt5_df = _fetch_mt5_ohlcv(symbol, timeframe, lookback)
     if mt5_df is not None and len(mt5_df) >= 50:
         return _build_result(
@@ -177,6 +245,10 @@ def fetch_candles(symbol: str, timeframe: str, lookback: str) -> Optional[Candle
             confidence_cap=98.0,
             notes=["live_source", "broker_volume"],
         )
+
+    if live_required:
+        logger.warning(f"Live candles required for {symbol} {timeframe}, but no MT5/bridge source is available")
+        return None
 
     if supports_exchange_symbol(symbol):
         exchange_df = fetch_exchange_ohlcv(symbol, timeframe, lookback)

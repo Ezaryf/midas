@@ -5,6 +5,8 @@ Falls back to in-memory state when MySQL is unavailable.
 """
 import json
 import logging
+import threading
+import asyncio
 from datetime import datetime, date
 from typing import Optional
 
@@ -20,6 +22,7 @@ class TradingState:
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
         self.daily_trades: int = 0
         self.daily_pnl: float = 0.0
         self.consecutive_losses: int = 0
@@ -105,7 +108,7 @@ class TradingState:
                 # Count today's trades from signals
                 today_str = self.last_reset_date.isoformat()
                 cursor.execute(
-                    "SELECT COUNT(*) as cnt FROM signals WHERE created_at >= %s",
+                    "SELECT COUNT(*) as cnt FROM signals WHERE created_at >= %s AND COALESCE(status, 'NEW') <> 'NO_TRADE'",
                     (today_str,),
                 )
                 count_row = cursor.fetchone()
@@ -127,89 +130,110 @@ class TradingState:
             logger.warning(f"Could not restore trading state from DB: {e}")
 
     def _persist(self):
-        """Save current state to MySQL (fire-and-forget)."""
+        """Save current state to MySQL (fire-and-forget logic)."""
         db = self._get_db()
         if not db:
             return
 
-        conn = db._get_conn()
-        if not conn:
-            return
-
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """INSERT INTO trading_state (id, daily_trades, daily_pnl, consecutive_losses,
-                       last_reset_date, trading_style, target_symbol, updated_at)
-                   VALUES ('singleton', %s, %s, %s, %s, %s, %s, NOW())
-                   ON DUPLICATE KEY UPDATE
-                       daily_trades = VALUES(daily_trades),
-                       daily_pnl = VALUES(daily_pnl),
-                       consecutive_losses = VALUES(consecutive_losses),
-                       last_reset_date = VALUES(last_reset_date),
-                       trading_style = VALUES(trading_style),
-                       target_symbol = VALUES(target_symbol),
-                       updated_at = NOW()
-                """,
-                (
-                    self.daily_trades,
-                    round(self.daily_pnl, 2),
-                    self.consecutive_losses,
-                    self.last_reset_date.isoformat(),
-                    self.trading_style,
-                    self.target_symbol,
-                ),
+        # Snap state under lock to avoid holding lock during I/O
+        with self._lock:
+            data = (
+                self.daily_trades,
+                round(self.daily_pnl, 2),
+                self.consecutive_losses,
+                self.last_reset_date.isoformat(),
+                self.trading_style,
+                self.target_symbol,
             )
-            conn.commit()
-            cursor.close()
-        except Exception as e:
-            logger.debug(f"Could not persist trading state: {e}")
-        finally:
-            conn.close()
+
+        def _do_persist():
+            conn = db._get_conn()
+            if not conn:
+                return
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """INSERT INTO trading_state (id, daily_trades, daily_pnl, consecutive_losses,
+                           last_reset_date, trading_style, target_symbol, updated_at)
+                       VALUES ('singleton', %s, %s, %s, %s, %s, %s, NOW())
+                       ON DUPLICATE KEY UPDATE
+                           daily_trades = VALUES(daily_trades),
+                           daily_pnl = VALUES(daily_pnl),
+                           consecutive_losses = VALUES(consecutive_losses),
+                           last_reset_date = VALUES(last_reset_date),
+                           trading_style = VALUES(trading_style),
+                           target_symbol = VALUES(target_symbol),
+                           updated_at = NOW()
+                    """,
+                    data,
+                )
+                conn.commit()
+                cursor.close()
+            except Exception as e:
+                logger.debug(f"Could not persist trading_state: {e}")
+            finally:
+                conn.close()
+
+        # If we are in an async loop, run in a separate thread to avoid blocking
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _do_persist)
+        except RuntimeError:
+            # Fallback for sync contexts (startup)
+            _do_persist()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def record_trade(self, is_loss: bool = False, loss_amount: float = 0.0):
         """Record a trade execution and update counters."""
-        self.daily_trades += 1
-        if is_loss:
-            self.consecutive_losses += 1
-            self.daily_pnl -= loss_amount
-        else:
-            self.consecutive_losses = 0
+        with self._lock:
+            self.daily_trades += 1
+            if is_loss:
+                self.consecutive_losses += 1
+                self.daily_pnl -= loss_amount
+            else:
+                self.consecutive_losses = 0
         self._persist()
 
     def check_and_reset_daily(self) -> bool:
         """Check if it's a new day and reset counters. Returns True if reset happened."""
         current_date = datetime.now().date()
-        if current_date != self.last_reset_date:
-            logger.info(
-                f"New trading day — resetting counters. "
-                f"Yesterday: {self.daily_trades} trades, PnL: ${self.daily_pnl:.2f}"
-            )
-            self.daily_trades = 0
-            self.daily_pnl = 0.0
-            self.consecutive_losses = 0
-            self.last_reset_date = current_date
+        with self._lock:
+            if current_date != self.last_reset_date:
+                logger.info(
+                    f"New trading day — resetting counters. "
+                    f"Yesterday: {self.daily_trades} trades, PnL: ${self.daily_pnl:.2f}"
+                )
+                self.daily_trades = 0
+                self.daily_pnl = 0.0
+                self.consecutive_losses = 0
+                self.last_reset_date = current_date
+                reset_happened = True
+            else:
+                reset_happened = False
+
+        if reset_happened:
             self._persist()
-            return True
-        return False
+        return reset_happened
 
     def set_trading_style(self, style: str):
         """Update the active trading style and persist."""
-        self.trading_style = style
+        with self._lock:
+            self.trading_style = style
         runtime_state.set_trading_style(style)
         self._persist()
 
     def set_target_symbol(self, symbol: str):
         """Update the active target symbol and persist."""
-        self.target_symbol = symbol
+        with self._lock:
+            self.target_symbol = symbol
         runtime_state.set_target_symbol(symbol)
         self._persist()
 
     def reset_consecutive_losses(self):
         """Reset consecutive losses (e.g. after cooldown period)."""
-        self.consecutive_losses = 0
+        with self._lock:
+            self.consecutive_losses = 0
         self._persist()
 
 

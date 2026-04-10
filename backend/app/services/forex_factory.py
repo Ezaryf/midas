@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import requests
 
@@ -18,18 +19,22 @@ class ForexFactoryService:
         self.url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         self._cache = None
         self._cache_time = 0
-        self._cache_ttl = 0  # No cache - fetch fresh every call
+        self._cache_ttl = int(os.getenv("FOREX_FACTORY_CACHE_TTL_SECONDS", "900"))
+        self._timeout = float(os.getenv("FOREX_FACTORY_TIMEOUT_SECONDS", "3"))
+        self._backoff_until = 0.0
 
     def get_weekly_events(self):
         """Fetches the weekly economic calendar events."""
         now = time.time()
-        
-        # Skip cache if TTL is 0 (disabled)
-        if self._cache_ttl > 0 and self._cache is not None and (now - self._cache_time) < self._cache_ttl:
+
+        if self._cache is not None and (now - self._cache_time) < self._cache_ttl:
             return self._cache
-        
+
+        if now < self._backoff_until:
+            return self._cache if self._cache is not None else []
+
         try:
-            response = requests.get(self.url, timeout=10)
+            response = requests.get(self.url, timeout=self._timeout)
             response.raise_for_status()
             data = response.json()
             
@@ -43,6 +48,7 @@ class ForexFactoryService:
             
         except requests.RequestException as e:
             logger.error(f"Failed to fetch ForexFactory calendar: {e}")
+            self._backoff_until = now + min(self._cache_ttl, 300)
             return self._cache if self._cache is not None else []
 
 if __name__ == "__main__":

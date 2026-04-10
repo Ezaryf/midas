@@ -72,8 +72,11 @@ def _age_bars(result: CandleSourceResult) -> float:
     age_seconds = float(result.age_seconds or inf)
     max_expected_age_seconds = float(result.max_expected_age_seconds or 0.0)
     if max_expected_age_seconds <= 0:
-        return inf
-    return age_seconds / max_expected_age_seconds
+        return 999.0
+    age_bars = age_seconds / max_expected_age_seconds
+    if age_bars > 1000 or age_bars != age_bars:  # Cap at 1000 bars or handle NaN
+        return 999.0
+    return age_bars
 
 
 def _allowed_strategy_class(age_bars: float, config: DataQualityConfig) -> str:
@@ -94,7 +97,9 @@ def get_data_quality_context(
     config: DataQualityConfig | None = None,
 ) -> DataQualityContext:
     config = config or DataQualityConfig()
-    age_seconds = float(source_result.age_seconds or inf)
+    age_seconds = float(source_result.age_seconds) if source_result.age_seconds is not None else 999.0
+    if age_seconds != age_seconds or age_seconds == inf:  # Handle NaN or inf
+        age_seconds = 999.0
     age_bars = _age_bars(source_result)
     allowed_strategy_class = _allowed_strategy_class(age_bars, config)
     freshness_passed = age_bars <= config.hard_block_max_bars

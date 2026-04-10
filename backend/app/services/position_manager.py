@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -103,7 +105,9 @@ class PositionManager:
 
     def __init__(self, config: PositionManagerConfig | None = None) -> None:
         self.config = config or PositionManagerConfig.from_env()
+        self._lock = threading.Lock()
         self._last_signal_time: dict[str, datetime] = {}
+        self._pending_executions: dict[str, tuple[str, float, datetime]] = {}
         logger.info(
             f"PositionManager initialized: enabled={self.config.enabled} "
             f"cooldown={self.config.cooldown_seconds}s "
@@ -113,8 +117,7 @@ class PositionManager:
 
     # ── Position Query ────────────────────────────────────────────────────────
 
-    @staticmethod
-    def get_current_position(symbol: str) -> PositionContext | None:
+    def get_current_position(self, symbol: str) -> PositionContext | None:
         """
         Retrieve the current open position for the symbol from MT5
         via the RiskManager.
@@ -167,6 +170,22 @@ class PositionManager:
                     take_profit=round(float(pos.tp), 2) if pos.tp else None,
                 )
 
+            # If MT5 has no position, check if we literally just emitted one that hasn't executed
+            if hasattr(self, "_pending_executions") and symbol in self._pending_executions:
+                pending_direction, _, pending_time = self._pending_executions[symbol]
+                # If less than 15 seconds passed, assume it's still being placed
+                if (datetime.now(timezone.utc) - pending_time).total_seconds() < 15:
+                    return PositionContext(
+                        ticket=-1,
+                        direction=pending_direction,
+                        entry_price=0.0,
+                        current_price=0.0,
+                        pnl_points=0.0,
+                        pnl_dollars=0.0,
+                        volume=0.0,
+                        age_minutes=0.0,
+                    )
+
         except Exception as exc:
             logger.debug(f"Could not fetch position for {symbol}: {exc}")
 
@@ -179,22 +198,29 @@ class PositionManager:
         Returns True if a signal with the same symbol:direction was emitted
         within the cooldown window.
         """
-        key = f"{symbol}:{direction}"
+        key = symbol  # Block ALL signals for the symbol during cooldown to prevent whipsaws
         now = datetime.now(timezone.utc)
 
-        last = self._last_signal_time.get(key)
-        if last is not None:
-            elapsed = (now - last).total_seconds()
-            if elapsed < self.config.cooldown_seconds:
-                logger.info(
-                    f"[PositionManager] Duplicate signal suppressed: {key} "
-                    f"({elapsed:.0f}s < {self.config.cooldown_seconds}s cooldown)"
-                )
-                return True
+        with self._lock:
+            last = self._last_signal_time.get(key)
+            if last is not None:
+                elapsed = (now - last).total_seconds()
+                if elapsed < self.config.cooldown_seconds:
+                    logger.info(
+                        f"[PositionManager] Duplicate signal suppressed: {key} "
+                        f"({elapsed:.0f}s < {self.config.cooldown_seconds}s cooldown)"
+                    )
+                    return True
 
-        # Record this signal time
-        self._last_signal_time[key] = now
         return False
+
+    def mark_signal_emitted(self, symbol: str, direction: str) -> None:
+        """Start the duplicate cooldown and track pending execution."""
+        key = symbol
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            self._last_signal_time[key] = now
+            self._pending_executions[symbol] = (direction, 0.0, now)
 
     # ── Decision Matrix ───────────────────────────────────────────────────────
 
@@ -365,29 +391,36 @@ class PositionManager:
         execution_result: str | None = None,
     ) -> None:
         """Persist a position decision to the database for audit trail."""
+        from app.services.database import db
+
+        if not db.is_enabled():
+            return
+
+        def _do_log():
+            try:
+                db.save_position_decision(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    signal_direction=signal_direction,
+                    signal_confidence=signal_confidence,
+                    had_position=decision.position is not None,
+                    position_direction=decision.position.direction if decision.position else None,
+                    position_pnl_points=decision.position.pnl_points if decision.position else None,
+                    position_pnl_dollars=decision.position.pnl_dollars if decision.position else None,
+                    position_age_minutes=decision.position.age_minutes if decision.position else None,
+                    action=decision.action.value,
+                    reason=decision.reason,
+                    executed=executed,
+                    execution_result=execution_result,
+                )
+            except Exception as exc:
+                logger.debug(f"Failed to log position decision: {exc}")
+
         try:
-            from app.services.database import db
-
-            if not db.is_enabled():
-                return
-
-            db.save_position_decision(
-                signal_id=signal_id,
-                symbol=symbol,
-                signal_direction=signal_direction,
-                signal_confidence=signal_confidence,
-                had_position=decision.position is not None,
-                position_direction=decision.position.direction if decision.position else None,
-                position_pnl_points=decision.position.pnl_points if decision.position else None,
-                position_pnl_dollars=decision.position.pnl_dollars if decision.position else None,
-                position_age_minutes=decision.position.age_minutes if decision.position else None,
-                action=decision.action.value,
-                reason=decision.reason,
-                executed=executed,
-                execution_result=execution_result,
-            )
-        except Exception as exc:
-            logger.debug(f"Failed to log position decision: {exc}")
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _do_log)
+        except RuntimeError:
+            _do_log()
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

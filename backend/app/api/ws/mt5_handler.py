@@ -4,6 +4,7 @@ import logging
 from collections import deque
 
 from app.services.runtime_state import runtime_state
+from app.services.trading_state import trading_state
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -25,12 +26,12 @@ class MT5ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info(f"MT5 local agent connected.")
+        logger.info("MT5 local agent connected.")
 
         # Replay any pending signals to the newly connected bridge
         if self._pending_signals:
             logger.info(f"Replaying {len(self._pending_signals)} pending signal(s) to new connection.")
-            for signal in list(self._pending_signals):
+            for signal in self._pending_signals:
                 try:
                     await websocket.send_json(signal)
                 except Exception:
@@ -40,7 +41,7 @@ class MT5ConnectionManager:
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-        logger.info(f"MT5 local agent disconnected.")
+        logger.info("MT5 local agent disconnected.")
 
     async def broadcast_json(self, data: dict):
         """Sends a JSON payload to all active connections."""
@@ -95,12 +96,30 @@ class MT5ConnectionManager:
             symbol = tick_data.get("symbol")
             if symbol and symbol != runtime_state.get_target_symbol():
                 runtime_state.set_target_symbol(symbol)
+                trading_state.set_target_symbol(symbol)
                 logger.info(f"Target symbol synced to: {symbol}")
 
             self.latest_tick = tick_data
             runtime_state.set_tick(self.latest_tick)
             await self.broadcast_json({"type": "TICK", "data": self.latest_tick})
-        
+
+        elif msg_type == "CANDLES":
+            candle_data = data.get("data", {})
+            symbol = candle_data.get("symbol")
+            timeframe = candle_data.get("timeframe")
+            candles = candle_data.get("candles", [])
+            if symbol and timeframe and candles:
+                if symbol != runtime_state.get_target_symbol():
+                    runtime_state.set_target_symbol(symbol)
+                    trading_state.set_target_symbol(symbol)
+                    logger.info(f"Target symbol synced from candle stream to: {symbol}")
+                runtime_state.set_candles(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    candles=candles,
+                    source=candle_data.get("source", "bridge-mt5"),
+                )
+
         elif msg_type == "ACK":
             # Acknowledgment of signal execution
             signal_id = data.get("signal_id")

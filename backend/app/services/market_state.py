@@ -3,6 +3,7 @@ Sequence-aware market-state engine for ranked trade setup generation.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import math
@@ -12,6 +13,8 @@ from uuid import uuid4
 import pandas as pd
 
 from app.schemas.signal import AnalysisBatch, TradeSignal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -812,7 +815,7 @@ def _detect_micro_scalp(snapshot: MarketSnapshot, secondary: Optional[MarketSnap
     if (
         snapshot.current_price >= mid
         and snapshot.current_price <= upper_lane
-        and micro_bias > 0.035
+        and micro_bias > 0.015
         and snapshot.close_location > 0.5
     ):
         candidate = _build_candidate(
@@ -836,7 +839,7 @@ def _detect_micro_scalp(snapshot: MarketSnapshot, secondary: Optional[MarketSnap
     if (
         snapshot.current_price <= mid
         and snapshot.current_price >= lower_lane
-        and micro_bias < -0.035
+        and micro_bias < -0.015
         and snapshot.close_location < 0.5
         and not lower_high_in_play
     ):
@@ -926,7 +929,7 @@ def _detect_exhaustion(snapshot: MarketSnapshot, secondary: Optional[MarketSnaps
 
 def _detect_supply_demand(snapshot: MarketSnapshot, secondary: Optional[MarketSnapshot], style_cfg: dict, patterns: Iterable) -> list[SetupCandidate]:
     candidates: list[SetupCandidate] = []
-    if snapshot.regime in {"range", "compression", "transition", "neutral"}:
+    if snapshot.regime in {"transition"}:
         return candidates
     
     zone_tolerance = snapshot.atr * 1.5
@@ -1071,20 +1074,52 @@ def detect_ranked_setups(
     secondary_patterns = patterns_by_timeframe.get(secondary.timeframe, []) if secondary else []
     all_patterns = primary_patterns + secondary_patterns
 
+    logger.info(
+        f"Setup detection: regime={primary.regime} | price={primary.current_price:.2f} | "
+        f"atr={primary.atr:.2f} | ema_slope={primary.ema_slope:.4f} | "
+        f"body_strength={primary.body_strength:.2f} | close_loc={primary.close_location:.3f} | "
+        f"range=[{primary.range_low:.2f}-{primary.range_high:.2f}] w={primary.range_width:.2f} | "
+        f"compression={primary.compression_ratio:.3f} | efficiency={primary.efficiency_ratio:.3f} | "
+        f"upper_wick={primary.upper_wick:.2f} | lower_wick={primary.lower_wick:.2f} | "
+        f"rel_vol={primary.relative_volume:.3f}"
+    )
+
     all_candidates: list[SetupCandidate] = []
-    all_candidates.extend(_detect_breakout(primary, secondary, style_cfg, all_patterns))
-    all_candidates.extend(_detect_pullback(primary, secondary, style_cfg, all_patterns))
-    all_candidates.extend(_detect_range(primary, secondary, style_cfg, all_patterns))
-    all_candidates.extend(_detect_micro_scalp(primary, secondary, style_cfg, all_patterns))
-    all_candidates.extend(_detect_exhaustion(primary, secondary, style_cfg, all_patterns))
-    all_candidates.extend(_detect_supply_demand(primary, secondary, style_cfg, all_patterns))
+    breakout_hits = _detect_breakout(primary, secondary, style_cfg, all_patterns)
+    pullback_hits = _detect_pullback(primary, secondary, style_cfg, all_patterns)
+    range_hits = _detect_range(primary, secondary, style_cfg, all_patterns)
+    micro_hits = _detect_micro_scalp(primary, secondary, style_cfg, all_patterns)
+    exhaustion_hits = _detect_exhaustion(primary, secondary, style_cfg, all_patterns)
+    supply_demand_hits = _detect_supply_demand(primary, secondary, style_cfg, all_patterns)
+
+    all_candidates.extend(breakout_hits)
+    all_candidates.extend(pullback_hits)
+    all_candidates.extend(range_hits)
+    all_candidates.extend(micro_hits)
+    all_candidates.extend(exhaustion_hits)
+    all_candidates.extend(supply_demand_hits)
+
+    logger.info(
+        f"Detector results: breakout={len(breakout_hits)} pullback={len(pullback_hits)} "
+        f"range={len(range_hits)} micro={len(micro_hits)} exhaustion={len(exhaustion_hits)} "
+        f"s/d={len(supply_demand_hits)} | total={len(all_candidates)} | "
+        f"allowed_detectors={allowed_detectors}"
+    )
 
     if allowed_detectors is not None:
         filtered_candidates: list[SetupCandidate] = []
+        fallback_threshold = getattr(regime_hierarchy, "fallback_override_threshold", 85.0)
         for candidate in all_candidates:
             if candidate.setup_type in allowed_detectors:
                 filtered_candidates.append(candidate)
                 continue
+            
+            # High-confidence fallback override
+            if candidate.score >= fallback_threshold:
+                candidate.context_tags.append("regime_gating_override")
+                filtered_candidates.append(candidate)
+                continue
+
             candidate.is_rejected = True
             candidate.no_trade_reasons.append(
                 {
