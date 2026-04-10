@@ -61,7 +61,7 @@ class Pattern:
 class PatternRecognizer:
     """Detects chart and candlestick patterns in OHLCV data."""
     
-    def __init__(self, min_confidence: float = 65.0):
+    def __init__(self, min_confidence: float = 50.0):
         self.min_confidence = min_confidence
         
     def detect_all_patterns(self, df: pd.DataFrame) -> List[Pattern]:

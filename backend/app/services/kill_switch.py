@@ -23,32 +23,47 @@ class KillSwitchDecision:
     require_manual_approval: bool = False
     size_multiplier: float = 1.0
     reasons: list[str] = field(default_factory=list)
+    is_enabled: bool = True
 
 
 class KillSwitch:
     @classmethod
-    def check(cls, context: KillSwitchContext) -> KillSwitchDecision:
+    def get_config(cls, account_id: str = "default"):
+        from app.services.database import db
         import os
-        if os.getenv("ENABLE_KILL_SWITCH", "true").lower() in ("0", "false", "no", "off"):
-            return KillSwitchDecision()
+        db_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
+        
+        return {
+            "enabled": db_settings.get("enable_kill_switch", os.getenv("ENABLE_KILL_SWITCH", "true")).lower() not in ("0", "false", "no", "off"),
+            "max_data_age": float(db_settings.get("max_data_age_seconds", "900")),
+            "max_drawdown": float(db_settings.get("max_drawdown_percent", "15")),
+            "max_consecutive_losses": int(db_settings.get("max_consecutive_losses", "5")),
+            "min_regime_stability": float(db_settings.get("min_regime_stability", "0.5")),
+        }
+
+    @classmethod
+    def check(cls, context: KillSwitchContext) -> KillSwitchDecision:
+        cfg = cls.get_config()
+        if not cfg["enabled"]:
+            return KillSwitchDecision(is_enabled=False)
 
         decision = KillSwitchDecision()
-        if context.data_age_seconds > 900:
+        if context.data_age_seconds > cfg["max_data_age"]:
             decision.halt_trading = True
             decision.size_multiplier = 0.0
             decision.reasons.append("data_staleness")
-        if context.drawdown_pct > 15:
+        if context.drawdown_pct > cfg["max_drawdown"]:
             decision.halt_trading = True
             decision.size_multiplier = 0.0
             decision.reasons.append("drawdown_threshold")
-        if context.consecutive_losses >= 5:
+        if context.consecutive_losses >= cfg["max_consecutive_losses"]:
             decision.halt_trading = True
             decision.size_multiplier = 0.0
             decision.reasons.append("consecutive_losses")
         if decision.halt_trading:
             return decision
 
-        if context.transition_cluster or context.regime_stability < 0.5:
+        if context.transition_cluster or context.regime_stability < cfg["min_regime_stability"]:
             decision.require_manual_approval = True
             decision.size_multiplier = min(decision.size_multiplier, 0.25)
             decision.reasons.append("regime_instability")

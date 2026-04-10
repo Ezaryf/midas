@@ -1193,6 +1193,27 @@ def _candidate_to_signal(
     )
 
 
+def candidate_to_signal(
+    *,
+    candidate: SetupCandidate,
+    symbol: str,
+    style: str,
+    batch_id: str,
+    rank: int,
+    is_primary: bool,
+    confidence_cap: float,
+) -> TradeSignal:
+    return _candidate_to_signal(
+        candidate=candidate,
+        symbol=symbol,
+        style=style,
+        batch_id=batch_id,
+        rank=rank,
+        is_primary=is_primary,
+        confidence_cap=confidence_cap,
+    )
+
+
 def build_analysis_batch(
     *,
     symbol: str,

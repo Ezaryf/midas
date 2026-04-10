@@ -138,7 +138,7 @@ class SignalFeedbackStore:
         )
         db.save_signal_outcome(asdict(payload))
         self.shadow_engine.compare_to_actual(asdict(payload))
-        trading_state.record_trade(is_loss=profit < 0, loss_amount=abs(profit) if profit < 0 else 0.0)
+        trading_state.record_completion(is_loss=profit < 0, loss_amount=abs(profit) if profit < 0 else 0.0)
 
     def sync_closed_orders(self, *, magic_number: int = 20250101) -> None:
         if mt5 is None or not db.is_enabled():

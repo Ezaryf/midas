@@ -38,12 +38,12 @@ FRESHNESS_RANK = {
 class DataQualityConfig:
     max_age_bars_by_class: dict[str, float] = field(
         default_factory=lambda: {
-            "live_only": 1.5,
-            "fresh_preferred": 2.5,
-            "delayed_ok": 4.0,
+            "live_only": 3.0,
+            "fresh_preferred": 5.0,
+            "delayed_ok": 10.0,
         }
     )
-    hard_block_max_bars: float = 2.5
+    hard_block_max_bars: float = 5.0
 
     def freshness_class_for_setup(self, setup_type: str) -> str:
         return SETUP_FRESHNESS_CLASS.get(setup_type, "fresh_preferred")
@@ -72,9 +72,11 @@ def _age_bars(result: CandleSourceResult) -> float:
     age_seconds = float(result.age_seconds or inf)
     max_expected_age_seconds = float(result.max_expected_age_seconds or 0.0)
     if max_expected_age_seconds <= 0:
-        return 999.0
+        max_expected_age_seconds = 60.0
+    if age_seconds == inf or age_seconds != age_seconds:
+        age_seconds = 60.0
     age_bars = age_seconds / max_expected_age_seconds
-    if age_bars > 1000 or age_bars != age_bars:  # Cap at 1000 bars or handle NaN
+    if age_bars > 1000 or age_bars != age_bars:
         return 999.0
     return age_bars
 

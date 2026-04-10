@@ -41,6 +41,7 @@ from app.services.market_state import (
     RankedSetupBook,
     build_analysis_batch,
     build_snapshot,
+    candidate_to_signal,
     detect_ranked_setups,
     determine_market_phase,
 )
@@ -80,6 +81,7 @@ class AnalysisContext:
     effective_auto_execute_confidence: float = 0.0
     session_label: str = "off"
     transition_penalty_active: bool = False
+    force_execution: bool = False
 
 
 class MarketDataService:
@@ -118,6 +120,10 @@ class MarketDataService:
     def _session_label(now: datetime) -> str:
         return ExecutionModel.get_session_label(now.astimezone(timezone.utc).hour)
 
+    @staticmethod
+    def _force_execution_enabled() -> bool:
+        return os.getenv("FORCE_EXECUTION_MODE", "false").lower() not in {"0", "false", "no", "off"}
+
     async def build_context(
         self,
         *,
@@ -127,9 +133,11 @@ class MarketDataService:
         news_blocked: bool,
         risk_blocked: bool,
     ) -> AnalysisContext:
+        from app.services.database import db
         style = self._normalize_style(trading_style)
         target_symbol = symbol or runtime_state.get_target_symbol() or "XAUUSD"
         config = self.style_config[style]
+        force_execution = self._force_execution_enabled()
 
         loop = asyncio.get_event_loop()
         runtime_tick = runtime_state.get_tick()
@@ -144,7 +152,7 @@ class MarketDataService:
         current_price: float | None = None
 
         for timeframe, lookback in zip(config["timeframes"], config["lookback"]):
-            live_required = style == "Scalper"
+            live_required = style == "Scalper" and not force_execution
             source_result = await loop.run_in_executor(
                 None,
                 lambda tf=timeframe, lb=lookback: fetch_candles(
@@ -223,8 +231,9 @@ class MarketDataService:
             current_price_source=current_price_source,
             generated_at=generated_at,
             data_quality=data_quality,
-            effective_auto_execute_confidence=float(os.getenv("AUTO_EXECUTE_MIN_CONFIDENCE", str(config["auto_execute_confidence"]))),
+            effective_auto_execute_confidence=float(db.get_settings(getattr(self, "account_id", "default")).get("auto_execute_confidence", os.getenv("AUTO_EXECUTE_MIN_CONFIDENCE", str(config["auto_execute_confidence"])))),
             session_label=self._session_label(generated_at),
+            force_execution=force_execution,
         )
 
 
@@ -672,21 +681,35 @@ class SignalPublisher:
         trend = getattr(primary_snapshot, "regime", batch.market_regime or "neutral").upper()
 
         execution_tradeable = True if not context.execution_adjustment else bool(context.execution_adjustment.tradeable)
-        primary_should_auto_execute = (
-            batch.primary.direction in ("BUY", "SELL")
-            and batch.primary.confidence >= context.effective_auto_execute_confidence
-            and context.session_active
-            and not context.news_blocked
-            and not context.risk_blocked
-            and not batch.primary.is_duplicate
-            and batch.primary.position_action in {
-                PositionAction.OPEN.value,
-                PositionAction.REVERSE.value,
-                PositionAction.SCALE_IN.value,
-            }
-            and not bool(context.kill_switch_decision and (context.kill_switch_decision.halt_trading or context.kill_switch_decision.require_manual_approval))
-            and execution_tradeable
-        )
+        if context.force_execution and batch.primary.direction in ("BUY", "SELL"):
+            primary_should_auto_execute = (
+                batch.primary.direction in ("BUY", "SELL")
+                and not context.risk_blocked
+                and not bool(context.kill_switch_decision and context.kill_switch_decision.halt_trading)
+                and batch.primary.position_action in {
+                    PositionAction.OPEN.value,
+                    PositionAction.REVERSE.value,
+                    PositionAction.SCALE_IN.value,
+                    PositionAction.COUNTER_ADD.value,
+                }
+            )
+        else:
+            primary_should_auto_execute = (
+                batch.primary.direction in ("BUY", "SELL")
+                and batch.primary.confidence >= context.effective_auto_execute_confidence
+                and context.session_active
+                and not context.news_blocked
+                and not context.risk_blocked
+                and not batch.primary.is_duplicate
+                and batch.primary.position_action in {
+                    PositionAction.OPEN.value,
+                    PositionAction.REVERSE.value,
+                    PositionAction.SCALE_IN.value,
+                    PositionAction.COUNTER_ADD.value,
+                }
+                and not bool(context.kill_switch_decision and (context.kill_switch_decision.halt_trading or context.kill_switch_decision.require_manual_approval))
+                and execution_tradeable
+            )
 
         if primary_should_auto_execute:
             position_manager = get_position_manager()
@@ -940,7 +963,7 @@ class TradingEngine:
 
             if execution_adjustment.reason:
                 signal.context_tags.append(execution_adjustment.reason)
-            if not execution_adjustment.tradeable:
+            if not execution_adjustment.tradeable and not context.force_execution:
                 signal.no_trade_reasons.append(
                     {
                         "code": "execution_not_tradeable",
@@ -984,6 +1007,95 @@ class TradingEngine:
             signal.position_action_reason = reason
             signal.is_duplicate = is_duplicate
             signal.context_tags.append(f"position_action:{action.value}")
+
+    @staticmethod
+    def _ensure_order_levels(*, signal: TradeSignal, current_price: float, atr: float) -> None:
+        if signal.direction not in {"BUY", "SELL"}:
+            return
+        if os.getenv("FORCE_EXECUTION_ALLOW_SYNTHETIC_LEVELS", "true").lower() in {"0", "false", "no", "off"}:
+            return
+        safe_price = current_price if current_price > 0 else signal.entry_price
+        if safe_price <= 0:
+            safe_price = 1.0
+        risk = abs(signal.entry_price - signal.stop_loss)
+        if risk <= 0:
+            risk = max(float(atr or 0.0) * 0.6, max(safe_price * 0.0015, 0.5))
+            signal.stop_loss = round(safe_price - risk, 2) if signal.direction == "BUY" else round(safe_price + risk, 2)
+        reward = abs(signal.take_profit_1 - signal.entry_price)
+        if reward <= 0:
+            reward = max(risk * 1.2, max(float(atr or 0.0) * 0.8, 0.5))
+            signal.take_profit_1 = round(safe_price + reward, 2) if signal.direction == "BUY" else round(safe_price - reward, 2)
+        reward_2 = abs(signal.take_profit_2 - signal.entry_price)
+        if reward_2 <= reward:
+            extension = max(reward * 1.4, max(float(atr or 0.0), 0.75))
+            signal.take_profit_2 = round(safe_price + extension, 2) if signal.direction == "BUY" else round(safe_price - extension, 2)
+        if signal.entry_price <= 0:
+            signal.entry_price = round(safe_price, 2)
+        if signal.entry_window_low <= 0:
+            signal.entry_window_low = round(signal.entry_price, 2)
+        if signal.entry_window_high <= 0:
+            signal.entry_window_high = round(signal.entry_price, 2)
+
+    def _promote_forced_primary(self, *, batch: AnalysisBatch, raw_setup_book: RankedSetupBook, context: AnalysisContext) -> AnalysisBatch:
+        if not context.force_execution or batch.primary.direction in {"BUY", "SELL"}:
+            return batch
+
+        raw_candidates = [candidate for candidate in raw_setup_book.selected if candidate.direction in {"BUY", "SELL"}]
+        if not raw_candidates:
+            raw_candidates = [candidate for candidate in raw_setup_book.rejected if candidate.direction in {"BUY", "SELL"}]
+        if not raw_candidates:
+            return batch
+
+        primary_tf = context.config["timeframes"][0]
+        primary_snapshot = context.snapshots.get(primary_tf)
+        confidence_cap = 98.0 if primary_snapshot and primary_snapshot.is_live else 84.0
+        forced_signal = candidate_to_signal(
+            candidate=raw_candidates[0],
+            symbol=context.symbol,
+            style=context.trading_style,
+            batch_id=batch.analysis_batch_id,
+            rank=1,
+            is_primary=True,
+            confidence_cap=confidence_cap,
+        )
+        forced_signal.execution_mode = "forced"
+        forced_signal.forced_from_hold = True
+        forced_signal.source_candidate_stage = "raw"
+        forced_signal.bypassed_blockers = list(
+            dict.fromkeys(
+                str(reason.get("code"))
+                for reason in batch.primary.no_trade_reasons
+                if isinstance(reason, dict) and reason.get("code")
+            )
+        )
+        forced_signal.no_trade_reasons = list(batch.primary.no_trade_reasons)
+        forced_signal.context_tags = list(dict.fromkeys([*(forced_signal.context_tags or []), "forced_execution"]))
+        forced_signal.reasoning = (
+            f"{forced_signal.reasoning} Forced execution mode promoted this setup after the standard pipeline returned HOLD."
+        )
+        self._ensure_order_levels(
+            signal=forced_signal,
+            current_price=context.current_price,
+            atr=float(getattr(primary_snapshot, "atr", 0.0) or 0.0),
+        )
+        batch.primary = forced_signal
+        batch.market_regime = forced_signal.market_regime
+        batch.regime_summary = f"{batch.regime_summary} Forced execution promoted raw candidate {forced_signal.setup_type}."
+        return batch
+
+    def _apply_force_execution_positioning(self, *, batch: AnalysisBatch, context: AnalysisContext) -> None:
+        if not context.force_execution or batch.primary.execution_mode != "forced" or batch.primary.direction not in {"BUY", "SELL"}:
+            return
+        forced_decision = self.position_manager.force_action_for_signal(
+            batch.primary.symbol or context.symbol,
+            batch.primary.direction,
+        )
+        batch.primary.position_action = forced_decision.action.value
+        batch.primary.position_action_reason = forced_decision.reason
+        batch.primary.is_duplicate = False
+        batch.primary.context_tags = list(
+            dict.fromkeys([*(batch.primary.context_tags or []), f"position_action:{forced_decision.action.value}"])
+        )
 
     def _evaluate_kill_switch(self, *, context: AnalysisContext) -> KillSwitchDecision:
         primary_tf = context.config["timeframes"][0]
@@ -1058,6 +1170,7 @@ class TradingEngine:
         )
         primary_tf = context.config["timeframes"][0]
         setup_book = RankedSetupBook()
+        raw_setup_book = RankedSetupBook()
         if primary_tf not in context.datasets:
             batch = self.ranking.build_no_data_batch(context)
         else:
@@ -1080,6 +1193,11 @@ class TradingEngine:
                 timeframe=primary_tf,
                 df=context.datasets[primary_tf][1],
                 trading_style=context.trading_style,
+            )
+            raw_setup_book = detect_ranked_setups(
+                snapshots=context.snapshots,
+                style_cfg=context.config,
+                patterns_by_timeframe=context.patterns_by_timeframe,
             )
             setup_book = detect_ranked_setups(
                 snapshots=context.snapshots,
@@ -1126,6 +1244,8 @@ class TradingEngine:
                         "blocking": False,
                     }
                 )
+            batch = self._promote_forced_primary(batch=batch, raw_setup_book=raw_setup_book, context=context)
+            self._apply_force_execution_positioning(batch=batch, context=context)
 
         summary = self.ranking.build_context_summary(context)
 

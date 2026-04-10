@@ -143,6 +143,11 @@ Reasoning: ${signal.reasoning}`;
                     {signal.setup_type.replaceAll("_", " ")}
                   </span>
                 )}
+                {signal.execution_mode === "forced" && (
+                  <span className="text-[10px] text-warning bg-warning/10 px-1.5 py-0.5 rounded-md uppercase whitespace-nowrap">
+                    forced execution
+                  </span>
+                )}
               </div>
               <p className="text-xs text-text-muted">
                 {formatRelativeTime(timestamp)}
@@ -262,6 +267,21 @@ Reasoning: ${signal.reasoning}`;
                 {signal.reasoning}
               </p>
             </div>
+            {signal.execution_mode === "forced" && (
+              <div className="rounded-xl bg-warning/10 border border-warning/20 p-3">
+                <p className="text-[11px] font-semibold text-warning uppercase tracking-wide">
+                  Forced MT5 execution
+                </p>
+                <p className="mt-1 text-xs text-text-secondary leading-relaxed">
+                  This setup was promoted from a normal HOLD outcome so MT5 still receives an executable {signal.direction} order.
+                </p>
+                {signal.bypassed_blockers && signal.bypassed_blockers.length > 0 && (
+                  <p className="mt-2 text-[11px] text-text-muted">
+                    Bypassed: {signal.bypassed_blockers.join(", ")}
+                  </p>
+                )}
+              </div>
+            )}
             
             {/* Patterns Section */}
             {"patterns" in signal && signal.patterns && Array.isArray(signal.patterns) && signal.patterns.length > 0 && (
