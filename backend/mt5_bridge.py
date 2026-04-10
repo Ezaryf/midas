@@ -205,15 +205,6 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
         
         # 4. Final check
         if not can_trade:
-                if can_trade_min:
-                    lot = min_lot
-                    can_trade = True
-                    logger.info(f"✅ Adjusted to minimum viable lot size: {lot}")
-                else:
-                    reason = min_reason  # Update reason to the minimum lot failure
-        
-        # 4. Final check
-        if not can_trade:
             logger.warning(f"⚠️ Risk check failed: {reason}")
             return {"status": "blocked", "reason": reason}
             
@@ -519,6 +510,7 @@ async def order_executor_worker(ws, auto_trade: bool):
     try:
         from app.services.database import db
         from app.services.risk_manager import get_risk_manager
+        from app.services.trading_state import trading_state
         risk_manager = get_risk_manager()
     except ImportError:
         logger.warning("Database service not available in bridge")
@@ -654,6 +646,11 @@ async def order_executor_worker(ws, auto_trade: bool):
 
         if result.get("status") == "ok":
             logger.info(f"   ✅ Order #{result.get('ticket')} placed @ {result.get('price')}")
+            # Record entry in trading state to update the real-time counter
+            try:
+                trading_state.record_entry()
+            except Exception as e:
+                logger.error(f"Failed to record trade entry: {e}")
         elif result.get("status") == "closed":
             logger.info(f"   {ack.get('message')}")
         elif result.get("status") in {"blocked", "skipped"}:
@@ -668,7 +665,34 @@ async def command_receiver(ws, auto_trade: bool):
     async for raw in ws:
         try:
             payload = json.loads(raw)
-            if payload.get("type") != "SIGNAL":
+            msg_type = payload.get("type")
+            
+            if msg_type == "CONFIG_UPDATE":
+                try:
+                    import sys
+                    from pathlib import Path
+                    if str(Path(__file__).parent) not in sys.path:
+                        sys.path.insert(0, str(Path(__file__).parent))
+                    from app.services.risk_manager import get_risk_manager
+                    r_manager = get_risk_manager()
+                    if r_manager:
+                        data = payload.get("data", {})
+                        if "max_concurrent_positions" in data and data["max_concurrent_positions"] is not None:
+                            r_manager.config.max_concurrent_positions = int(data["max_concurrent_positions"])
+                        if "min_lot_size" in data and data["min_lot_size"] is not None:
+                            r_manager.config.min_lot_size = float(data["min_lot_size"])
+                        if "max_daily_trades" in data and data["max_daily_trades"] is not None:
+                            r_manager.config.max_daily_trades = int(data["max_daily_trades"])
+                        if "max_risk_percent" in data and data["max_risk_percent"] is not None:
+                            r_manager.config.max_risk_percent = float(data["max_risk_percent"])
+                        if "daily_loss_limit" in data and data["daily_loss_limit"] is not None:
+                            r_manager.config.daily_loss_limit = float(data["daily_loss_limit"])
+                        logger.info(f"🔄 Bridge dynamically updated Risk limits: concurrent={r_manager.config.max_concurrent_positions}, trades={r_manager.config.max_daily_trades}")
+                except Exception as e:
+                    logger.error(f"Failed to process CONFIG_UPDATE: {e}")
+                continue
+
+            if msg_type != "SIGNAL":
                 continue
 
             data = payload.get("data", {})

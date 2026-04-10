@@ -12,25 +12,29 @@ from app.services.runtime_state import runtime_state
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_INTERVAL = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", "10"))
+def get_loop_config(account_id: str = "default"):
+    from app.services.database import db
+    db_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
+    
+    return {
+        "analysis_interval": int(db_settings.get("analysis_interval_seconds", os.getenv("ANALYSIS_INTERVAL_SECONDS", "10"))),
+        "max_daily_trades": int(db_settings.get("max_daily_trades", os.getenv("MAX_DAILY_TRADES", "50"))),
+        "max_daily_loss_pct": float(db_settings.get("max_daily_loss_pct", "2.0")),
+        "max_consecutive_losses": int(db_settings.get("max_consecutive_losses", "3")),
+        "gold_spread_points": float(db_settings.get("gold_spread_points", "5.0")),
+        "commission_per_lot": float(db_settings.get("commission_per_lot", "2.0")),
+    }
 
 LONDON_SESSION = (8, 12)
 NY_SESSION = (13, 17)
-
-MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "5"))
-MAX_DAILY_LOSS_PCT = 2.0
-MAX_CONSECUTIVE_LOSSES = 3
-
-GOLD_SPREAD_POINTS = 5.0
-COMMISSION_PER_LOT = 2.0
 RECENT_PRIMARY_REGIMES: deque[str] = deque(maxlen=3)
 
 STYLE_CONFIG = {
     "Scalper": {
         "timeframes": ["1m", "5m"],
         "lookback": ["1d", "2d"],
-        "min_pattern_confidence": 58,
-        "auto_execute_confidence": 72,
+        "min_pattern_confidence": 50,
+        "auto_execute_confidence": 62,
         "rr_min": 1.15,
         "rr_target": 1.6,
         "stop_buffer_atr": 0.24,
@@ -43,8 +47,8 @@ STYLE_CONFIG = {
     "Intraday": {
         "timeframes": ["15m", "1h"],
         "lookback": ["5d", "7d"],
-        "min_pattern_confidence": 55,
-        "auto_execute_confidence": 75,
+        "min_pattern_confidence": 48,
+        "auto_execute_confidence": 65,
         "rr_min": 1.5,
         "rr_target": 2.35,
         "stop_buffer_atr": 0.35,
@@ -54,8 +58,8 @@ STYLE_CONFIG = {
     "Swing": {
         "timeframes": ["1h", "4h"],
         "lookback": ["10d", "20d"],
-        "min_pattern_confidence": 55,
-        "auto_execute_confidence": 80,
+        "min_pattern_confidence": 48,
+        "auto_execute_confidence": 70,
         "rr_min": 1.8,
         "rr_target": 3.0,
         "stop_buffer_atr": 0.45,
@@ -214,8 +218,6 @@ async def run_analysis_cycle(trading_style: str | None = None, symbol: str | Non
 
 
 async def background_trading_loop():
-    logger.info(f"Trading loop started. Analysis every {ANALYSIS_INTERVAL}s.")
-
     from app.services.trading_state import trading_state as state
 
     try:
@@ -228,17 +230,21 @@ async def background_trading_loop():
 
     while True:
         try:
-            await asyncio.sleep(ANALYSIS_INTERVAL)
+            loop_cfg = get_loop_config()
+            interval = loop_cfg["analysis_interval"]
+            
+            await asyncio.sleep(interval)
             state.check_and_reset_daily()
 
-            max_daily_trades = int(os.getenv("MAX_DAILY_TRADES", "5"))
+            max_daily_trades = loop_cfg["max_daily_trades"]
             if state.daily_trades >= max_daily_trades:
                 logger.warning(f"Daily trade limit reached ({max_daily_trades}). Pausing until tomorrow.")
                 await asyncio.sleep(300)
                 continue
 
-            if state.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                logger.warning(f"Consecutive loss limit reached ({MAX_CONSECUTIVE_LOSSES}). Pausing for 1 hour.")
+            max_consecutive_losses = loop_cfg["max_consecutive_losses"]
+            if state.consecutive_losses >= max_consecutive_losses:
+                logger.warning(f"Consecutive loss limit reached ({max_consecutive_losses}). Pausing for 1 hour.")
                 await asyncio.sleep(3600)
                 state.reset_consecutive_losses()
                 continue

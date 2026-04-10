@@ -80,6 +80,19 @@ class UpdateSettingsRequest(BaseModel):
     analysis_interval_seconds: int | None = None
     position_cooldown_seconds: int | None = None
     enable_kill_switch: bool | None = None
+    min_lot_size: float | None = None
+    max_lot_size: float | None = None
+    min_stop_distance_points: float | None = None
+    partial_close_enabled: bool | None = None
+    partial_close_percent: float | None = None
+    breakeven_enabled: bool | None = None
+    breakeven_buffer_pips: float | None = None
+    trailing_stop_enabled: bool | None = None
+    trailing_stop_distance_pips: float | None = None
+    trailing_stop_step_pips: float | None = None
+    time_exit_enabled: bool | None = None
+    exit_before_news_minutes: int | None = None
+    exit_before_weekend_hours: int | None = None
 
 
 class RiskCheckRequest(BaseModel):
@@ -116,62 +129,106 @@ async def set_target_symbol(req: SetTargetSymbolRequest):
 async def update_settings(req: UpdateSettingsRequest):
     from app.services.risk_manager import get_risk_manager
     from app.services.position_manager import get_position_manager
+    from app.services.position_monitor import get_position_monitor
+    from app.services.database import db
     import app.core.loop as trading_loop
 
-    changes = []
+    account_id = "default"
+    current_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
+    updates = req.model_dump(exclude_unset=True)
+    current_settings.update(updates)
+    if db and db.is_enabled():
+        db.save_settings(account_id, current_settings)
+
+    # 1. Update services
     risk_manager = get_risk_manager()
     position_manager = get_position_manager()
+    position_monitor = get_position_monitor()
 
-    if req.max_concurrent_positions is not None:
-        os.environ["MAX_CONCURRENT_POSITIONS"] = str(req.max_concurrent_positions)
-        if risk_manager:
-            risk_manager.config.max_concurrent_positions = req.max_concurrent_positions
-        changes.append(f"max_concurrent_positions={req.max_concurrent_positions}")
-
-    if req.max_daily_trades is not None:
-        os.environ["MAX_DAILY_TRADES"] = str(req.max_daily_trades)
-        if risk_manager:
-            risk_manager.config.max_daily_trades = req.max_daily_trades
-        changes.append(f"max_daily_trades={req.max_daily_trades}")
-
-    if req.max_risk_percent is not None:
-        os.environ["MAX_RISK_PERCENT"] = str(req.max_risk_percent)
-        if risk_manager:
-            risk_manager.config.max_risk_percent = req.max_risk_percent
-        changes.append(f"max_risk_percent={req.max_risk_percent}")
-
-    if req.daily_loss_limit is not None:
-        os.environ["DAILY_LOSS_LIMIT"] = str(req.daily_loss_limit)
-        if risk_manager:
-            risk_manager.config.daily_loss_limit = req.daily_loss_limit
-        changes.append(f"daily_loss_limit={req.daily_loss_limit}")
-
-    if req.news_blackout_minutes is not None:
-        os.environ["NEWS_BLACKOUT_MINUTES"] = str(req.news_blackout_minutes)
-        if risk_manager:
-            risk_manager.config.news_blackout_minutes = req.news_blackout_minutes
-        changes.append(f"news_blackout_minutes={req.news_blackout_minutes}")
-
-    if req.auto_execute_confidence is not None:
-        os.environ["AUTO_EXECUTE_MIN_CONFIDENCE"] = str(req.auto_execute_confidence)
-        changes.append(f"auto_execute_confidence={req.auto_execute_confidence}")
-
+    if risk_manager:
+        risk_manager.config.refresh_config()
+    if position_manager:
+        position_manager.config = position_manager.config.from_db()
+    if position_monitor:
+        position_monitor.config.refresh_config()
+    
+    # 2. Update loop interval if changed
     if req.analysis_interval_seconds is not None:
-        os.environ["ANALYSIS_INTERVAL_SECONDS"] = str(req.analysis_interval_seconds)
         trading_loop.ANALYSIS_INTERVAL = req.analysis_interval_seconds
-        changes.append(f"analysis_interval_seconds={req.analysis_interval_seconds}")
 
-    if req.position_cooldown_seconds is not None:
-        os.environ["POSITION_COOLDOWN_SECONDS"] = str(req.position_cooldown_seconds)
-        position_manager.config.cooldown_seconds = req.position_cooldown_seconds
-        changes.append(f"position_cooldown_seconds={req.position_cooldown_seconds}")
+    # 3. Collect changes for response
+    changes = [f"{k}={v}" for k, v in updates.items()]
 
-    if req.enable_kill_switch is not None:
-        os.environ["ENABLE_KILL_SWITCH"] = str(req.enable_kill_switch).lower()
-        changes.append(f"enable_kill_switch={req.enable_kill_switch}")
 
     logger.info(f"Settings updated: {', '.join(changes)}")
+
+    from app.api.ws.mt5_handler import manager
+    await manager.broadcast_json({"type": "CONFIG_UPDATE", "data": req.model_dump(exclude_unset=True)})
+
     return GenericStatusResponse(status="ok", message="Settings updated", data={"changes": changes})
+
+
+@router.get("/settings", response_model=dict)
+def get_settings():
+    from app.services.risk_manager import get_risk_manager
+    from app.services.position_manager import get_position_manager
+    from app.services.position_monitor import get_position_monitor
+    from app.services.database import db
+    
+    risk_manager = get_risk_manager()
+    position_manager = get_position_manager()
+    position_monitor = get_position_monitor()
+    
+    account_id = "default"
+    db_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
+    
+    def _get(key: str, env_key: str, default: any, type_func=float):
+        if key in db_settings:
+            return type_func(db_settings[key])
+        return type_func(os.getenv(env_key, default))
+
+    def _get_bool(key: str, env_key: str, default: bool):
+        if key in db_settings:
+            return bool(db_settings[key])
+        return os.getenv(env_key, str(default).lower()) == "true"
+
+    settings = {
+        "confidence": {
+            "auto_execute_confidence": _get("auto_execute_confidence", "AUTO_EXECUTE_MIN_CONFIDENCE", "60"),
+            "force_execution_mode": os.getenv("FORCE_EXECUTION_MODE", "false") == "true",
+        },
+        "daily_limits": {
+            "max_daily_trades": _get("max_daily_trades", "MAX_DAILY_TRADES", "50", int),
+            "daily_loss_limit": _get("daily_loss_limit", "DAILY_LOSS_LIMIT", "500", float),
+        },
+        "risk_per_trade": {
+            "max_risk_percent": risk_manager.config.max_risk_percent if risk_manager and "max_risk_percent" not in db_settings else _get("max_risk_percent", "MAX_RISK_PERCENT", "1.0", float),
+            "min_lot_size": risk_manager.config.min_lot_size if risk_manager and "min_lot_size" not in db_settings else _get("min_lot_size", "MIN_LOT_SIZE", "0.01", float),
+            "max_lot_size": risk_manager.config.max_lot_size if risk_manager and "max_lot_size" not in db_settings else _get("max_lot_size", "MAX_LOT_SIZE", "1.0", float),
+            "min_stop_distance_points": _get("min_stop_distance_points", "MIN_STOP_DISTANCE_POINTS", "30", float),
+        },
+        "exposure": {
+            "max_concurrent_positions": risk_manager.config.max_concurrent_positions if risk_manager and "max_concurrent_positions" not in db_settings else _get("max_concurrent_positions", "MAX_CONCURRENT_POSITIONS", "3", int),
+            "max_drawdown_percent": risk_manager.config.max_drawdown_percent if risk_manager and "max_drawdown_percent" not in db_settings else _get("max_drawdown_percent", "MAX_DRAWDOWN_PERCENT", "20.0", float),
+            "allow_hedging": risk_manager.config.allow_hedging if risk_manager and "allow_hedging" not in db_settings else _get_bool("allow_hedging", "ALLOW_HEDGING", False),
+        },
+        "position_management": {
+            "partial_close_enabled": position_monitor.config.partial_close_enabled if position_monitor and "partial_close_enabled" not in db_settings else _get_bool("partial_close_enabled", "PARTIAL_CLOSE_ENABLED", True),
+            "partial_close_percent": position_monitor.config.partial_close_percent if position_monitor and "partial_close_percent" not in db_settings else _get("partial_close_percent", "PARTIAL_CLOSE_PERCENT", "50", float),
+            "breakeven_enabled": position_monitor.config.breakeven_enabled if position_monitor and "breakeven_enabled" not in db_settings else _get_bool("breakeven_enabled", "BREAKEVEN_ENABLED", True),
+            "breakeven_buffer_pips": position_monitor.config.breakeven_buffer_pips if position_monitor and "breakeven_buffer_pips" not in db_settings else _get("breakeven_buffer_pips", "BREAKEVEN_BUFFER_PIPS", "5", float),
+            "trailing_stop_enabled": position_monitor.config.trailing_stop_enabled if position_monitor and "trailing_stop_enabled" not in db_settings else _get_bool("trailing_stop_enabled", "TRAILING_STOP_ENABLED", True),
+            "trailing_stop_distance_pips": position_monitor.config.trailing_stop_distance_pips if position_monitor and "trailing_stop_distance_pips" not in db_settings else _get("trailing_stop_distance_pips", "TRAILING_STOP_DISTANCE_PIPS", "50", float),
+            "trailing_stop_step_pips": position_monitor.config.trailing_stop_step_pips if position_monitor and "trailing_stop_step_pips" not in db_settings else _get("trailing_stop_step_pips", "TRAILING_STOP_STEP_PIPS", "10", float),
+            "time_exit_enabled": position_monitor.config.time_exit_enabled if position_monitor and "time_exit_enabled" not in db_settings else _get_bool("time_exit_enabled", "TIME_EXIT_ENABLED", True),
+            "exit_before_news_minutes": position_monitor.config.exit_before_news_minutes if position_monitor and "exit_before_news_minutes" not in db_settings else _get("exit_before_news_minutes", "EXIT_BEFORE_NEWS_MINUTES", "15", int),
+            "exit_before_weekend_hours": position_monitor.config.exit_before_weekend_hours if position_monitor and "exit_before_weekend_hours" not in db_settings else _get("exit_before_weekend_hours", "EXIT_BEFORE_WEEKEND_HOURS", "2", int),
+        },
+
+        "position_cooldown_seconds": position_manager.config.cooldown_seconds if position_manager and "position_cooldown_seconds" not in db_settings else _get("position_cooldown_seconds", "POSITION_COOLDOWN_SECONDS", "30", int),
+        "analysis_interval_seconds": _get("analysis_interval_seconds", "ANALYSIS_INTERVAL_SECONDS", "5", int),
+    }
+    return settings
 
 
 @router.post("/signals/execute", response_model=ExecutionResultResponse)
@@ -381,14 +438,15 @@ def get_open_positions():
                 "symbol": pos.symbol,
                 "type": "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL",
                 "volume": pos.volume,
-                "price_open": pos.price_open,
-                "price_current": pos.price_current,
+                "open_price": pos.price_open,
+                "current_price": pos.price_current,
                 "sl": pos.sl,
                 "tp": pos.tp,
                 "profit": pos.profit,
                 "swap": pos.swap,
+                "commission": getattr(pos, "commission", 0.0),
                 "comment": pos.comment,
-                "time": pos.time,
+                "open_time": str(pos.time),
             }
         )
     return {"positions": payload}

@@ -4,19 +4,20 @@ import { useState } from "react";
 import Link from "next/link";
 import {
   TrendingUp, ArrowLeft, Monitor, Brain, Sliders, Shield,
-  Eye, EyeOff, CheckCircle2, XCircle, Loader2, Download, Zap, RefreshCw,
+  Eye, EyeOff, CheckCircle2, XCircle, Loader2, Download, Zap, RefreshCw, Layers, Crosshair
 } from "lucide-react";
 import { useConfig } from "@/hooks/useConfig";
 import { useConnectionStatus } from "@/hooks/useConnectionStatus";
 import { useMidasStore } from "@/store/useMidasStore";
 
-type Tab = "setup" | "ai" | "trading" | "risk";
+type Tab = "setup" | "ai" | "trading" | "risk" | "monitor";
 
 const TABS: { id: Tab; label: string; icon: typeof Monitor }[] = [
   { id: "setup",   label: "Setup",    icon: Monitor },
   { id: "ai",      label: "AI Model", icon: Brain   },
   { id: "trading", label: "Trading",  icon: Sliders },
   { id: "risk",    label: "Risk",     icon: Shield  },
+  { id: "monitor", label: "Position Mgt", icon: Layers },
 ];
 
 const AI_PROVIDERS = [
@@ -79,6 +80,19 @@ export default function ConfigPage() {
       else if (key === "analysisIntervalSeconds") body.analysis_interval_seconds = value;
       else if (key === "positionCooldownSeconds") body.position_cooldown_seconds = value;
       else if (key === "enableKillSwitch") body.enable_kill_switch = value;
+      else if (key === "minLotSize") body.min_lot_size = value;
+      else if (key === "maxLotSize") body.max_lot_size = value;
+      else if (key === "minStopDistancePoints") body.min_stop_distance_points = value;
+      else if (key === "partialCloseEnabled") body.partial_close_enabled = value;
+      else if (key === "partialClosePercent") body.partial_close_percent = value;
+      else if (key === "breakevenEnabled") body.breakeven_enabled = value;
+      else if (key === "breakevenBufferPips") body.breakeven_buffer_pips = value;
+      else if (key === "trailingStopEnabled") body.trailing_stop_enabled = value;
+      else if (key === "trailingStopDistancePips") body.trailing_stop_distance_pips = value;
+      else if (key === "trailingStopStepPips") body.trailing_stop_step_pips = value;
+      else if (key === "timeExitEnabled") body.time_exit_enabled = value;
+      else if (key === "exitBeforeNewsMinutes") body.exit_before_news_minutes = value;
+      else if (key === "exitBeforeWeekendHours") body.exit_before_weekend_hours = value;
       
       if (Object.keys(body).length > 0) {
         await fetch("/api/settings", {
@@ -134,19 +148,32 @@ export default function ConfigPage() {
   const downloadEnv = () => {
     const lines = [
       "# Midas Backend Configuration",
-      "MT5_LOGIN=" + config.mt5Account, "MT5_PASSWORD=" + config.mt5Password,
+      "MT5_LOGIN=" + config.mt5Account, "MT5_PASSWORD=<ENTER_YOUR_PASSWORD>",
       "MT5_SERVER=" + config.mt5Server, "MT5_SYMBOL=GOLD",
       "MIDAS_WS_URL=ws://localhost:8000/ws/mt5", "DEFAULT_LOT=0.01", "TICK_INTERVAL=0.1",
-      "AI_PROVIDER=" + config.aiProvider, "AI_API_KEY=" + config.apiKey,
+      "AI_PROVIDER=" + config.aiProvider, "AI_API_KEY=<ENTER_YOUR_API_KEY>",
       "TRADING_STYLE=" + (config.tradingStyle.charAt(0).toUpperCase() + config.tradingStyle.slice(1)),
       "ANALYSIS_INTERVAL_SECONDS=" + config.analysisIntervalSeconds,
       "AUTO_EXECUTE_MIN_CONFIDENCE=" + config.autoExecuteConfidence,
       "MAX_DAILY_TRADES=" + config.maxDailyTrades,
       "MAX_CONCURRENT_POSITIONS=" + config.maxConcurrentPositions,
       "MAX_RISK_PERCENT=" + config.maxRiskPercent,
+      "MIN_LOT_SIZE=" + config.minLotSize,
+      "MAX_LOT_SIZE=" + config.maxLotSize,
+      "MIN_STOP_DISTANCE_POINTS=" + config.minStopDistancePoints,
       "DAILY_LOSS_LIMIT=" + config.dailyLossLimit,
       "NEWS_BLACKOUT_MINUTES=" + config.newsBlackoutMinutes,
       "POSITION_COOLDOWN_SECONDS=" + config.positionCooldownSeconds,
+      "PARTIAL_CLOSE_ENABLED=" + config.partialCloseEnabled,
+      "PARTIAL_CLOSE_PERCENT=" + config.partialClosePercent,
+      "BREAKEVEN_ENABLED=" + config.breakevenEnabled,
+      "BREAKEVEN_BUFFER_PIPS=" + config.breakevenBufferPips,
+      "TRAILING_STOP_ENABLED=" + config.trailingStopEnabled,
+      "TRAILING_STOP_DISTANCE_PIPS=" + config.trailingStopDistancePips,
+      "TRAILING_STOP_STEP_PIPS=" + config.trailingStopStepPips,
+      "TIME_EXIT_ENABLED=" + config.timeExitEnabled,
+      "EXIT_BEFORE_NEWS_MINUTES=" + config.exitBeforeNewsMinutes,
+      "EXIT_BEFORE_WEEKEND_HOURS=" + config.exitBeforeWeekendHours,
     ].join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([lines], { type: "text/plain" }));
@@ -375,7 +402,7 @@ export default function ConfigPage() {
               <div className="grid gap-4 sm:grid-cols-2">
                 {([
                   { key: "autoExecuteConfidence", label: "Auto-Execute Confidence", unit: "%", step: 1, min: 50, max: 99 },
-                  { key: "maxDailyTrades", label: "Max Daily Trades", unit: "trades", step: 1, min: 1, max: 50 },
+                  { key: "maxDailyTrades", label: "Max Daily Trades", unit: "trades", step: 1, min: 1, max: 1000 },
                   { key: "analysisIntervalSeconds", label: "Analysis Interval", unit: "sec", step: 1, min: 3, max: 300 },
                   { key: "positionCooldownSeconds", label: "Signal Cooldown", unit: "sec", step: 5, min: 0, max: 300 },
                 ] as const).map(({ key, label, unit, step, min, max }) => (
@@ -418,10 +445,10 @@ export default function ConfigPage() {
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 {([
-                  { key: "maxRiskPercent",      label: "Max Risk Per Trade", unit: "%",       step: 0.1, min: 0.1, max: 10   },
-                  { key: "dailyLossLimit",      label: "Daily Loss Limit",   unit: "$",       step: 50,  min: 0,   max: 10000 },
+                  { key: "maxRiskPercent",      label: "Max Risk Per Trade", unit: "%",       step: 0.1, min: 0.1, max: 100  },
+                  { key: "dailyLossLimit",      label: "Daily Loss Limit",   unit: "$",       step: 50,  min: 0,   max: 100000 },
                   { key: "newsBlackoutMinutes", label: "News Blackout",      unit: "min",     step: 5,   min: 0,   max: 120   },
-                  { key: "maxConcurrentPositions", label: "Max Positions",  unit: "trades",  step: 1,   min: 1,   max: 10    },
+                  { key: "maxConcurrentPositions", label: "Max Positions",  unit: "trades",  step: 1,   min: 1,   max: 100   },
                 ] as const).map(({ key, label, unit, step, min, max }) => (
                   <div key={key} className="rounded-xl bg-surface p-4">
                     <div className="flex items-center justify-between mb-3">
@@ -453,6 +480,88 @@ export default function ConfigPage() {
               </div>
               <div className="rounded-xl bg-warning/5 border border-warning/20 p-4">
                 <p className="text-xs text-warning">AI signals are not financial advice. Only trade capital you can afford to lose.</p>
+              </div>
+            </div>
+          )}
+
+          {tab === "monitor" && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-base font-semibold mb-0.5">Position Management</h2>
+                <p className="text-xs text-text-muted">Dynamic rules for managing active trades and locking in profits.</p>
+              </div>
+              
+              <div className="space-y-4">
+                {([
+                  { key: "partialCloseEnabled", label: "Partial Close at TP1", desc: "Close a percentage of the position at the first take profit level." },
+                  { key: "breakevenEnabled", label: "Move to Break-Even", desc: "Move stop loss to entry price + buffer after partial close." },
+                  { key: "trailingStopEnabled", label: "Trailing Stop", desc: "Automatically trail the stop loss to protect profits." },
+                  { key: "timeExitEnabled", label: "Time-Based Exits", desc: "Close positions automatically before news or weekends." },
+                ] as const).map(({ key, label, desc }) => (
+                  <div key={key} className="flex items-center justify-between rounded-xl bg-surface p-4">
+                    <div>
+                      <p className="text-sm font-medium">{label}</p>
+                      <p className="text-xs text-text-muted">{desc}</p>
+                    </div>
+                    <button onClick={() => { 
+                        const newBool = !(config as unknown as Record<string, boolean>)[key];
+                        saveField(key as keyof typeof config, newBool); 
+                        syncSettingToBackend(key, newBool); 
+                      }}
+                      className={"relative h-6 w-11 shrink-0 rounded-full transition-colors " + ((config as unknown as Record<string, boolean>)[key] ? "bg-bullish" : "bg-surface-active")}>
+                      <span className={"absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-md transition-transform " + ((config as unknown as Record<string, boolean>)[key] ? "translate-x-5" : "")} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {([
+                  { key: "partialClosePercent", label: "Partial Close", unit: "%", step: 5, min: 10, max: 90, showIf: config.partialCloseEnabled },
+                  { key: "breakevenBufferPips", label: "Break-Even Buffer", unit: "pips", step: 1, min: 0, max: 20, showIf: config.breakevenEnabled },
+                  { key: "trailingStopDistancePips", label: "Trailing Distance", unit: "pips", step: 5, min: 10, max: 200, showIf: config.trailingStopEnabled },
+                  { key: "trailingStopStepPips", label: "Trailing Step", unit: "pips", step: 1, min: 1, max: 50, showIf: config.trailingStopEnabled },
+                  { key: "exitBeforeNewsMinutes", label: "News Exit Buffer", unit: "min", step: 5, min: 5, max: 120, showIf: config.timeExitEnabled },
+                  { key: "exitBeforeWeekendHours", label: "Weekend Exit Buffer", unit: "hrs", step: 1, min: 1, max: 48, showIf: config.timeExitEnabled },
+                ] as const).filter(i => i.showIf).map(({ key, label, unit, step, min, max }) => (
+                  <div key={key} className="rounded-xl bg-surface p-4 border-l-2 border-gold/50">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-xs font-medium text-text-secondary">{label}</label>
+                      <span className="text-xs text-text-muted">{unit}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input type="range" min={min} max={max} step={step}
+                        value={(config as unknown as Record<string, number>)[key]}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
+                        className="flex-1 accent-gold" />
+                      <input type="number" min={min} max={max} step={step}
+                        value={(config as unknown as Record<string, number>)[key]}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
+                        className="w-20 rounded-lg bg-surface-active border border-border px-2 py-1.5 text-sm text-center font-[family-name:var(--font-jetbrains-mono)] focus:outline-none focus:border-gold/40" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="grid gap-4 sm:grid-cols-3">
+                {([
+                  { key: "minLotSize", label: "Min Lot", unit: "lots", step: 0.01, min: 0.01, max: 10 },
+                  { key: "maxLotSize", label: "Max Lot", unit: "lots", step: 0.01, min: 0.01, max: 100 },
+                  { key: "minStopDistancePoints", label: "Min Stop Dist", unit: "pts", step: 10, min: 10, max: 500 },
+                ] as const).map(({ key, label, unit, step, min, max }) => (
+                  <div key={key} className="rounded-xl bg-surface p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-xs font-medium text-text-secondary">{label}</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                       <input type="number" min={min} max={max} step={step}
+                        value={(config as unknown as Record<string, number>)[key]}
+                        onChange={e => saveRiskField(key as keyof typeof config, parseFloat(e.target.value))}
+                        className="w-full rounded-lg bg-surface-active border border-border px-2 py-1.5 text-sm text-center font-[family-name:var(--font-jetbrains-mono)] focus:outline-none focus:border-gold/40" />
+                       <span className="text-xs text-text-muted w-8">{unit}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
