@@ -113,6 +113,9 @@ export default function ConfigPage() {
     if (!config.mt5Account || !config.mt5Password || !config.mt5Server) {
       setMt5State("error"); setMt5Err("Fill all three fields first."); return;
     }
+    if (mt5State === "ok") {
+      setMt5State("idle");
+    }
     setMt5State("testing"); setMt5Info(null); setMt5Err("");
     try {
       const res = await fetch("/api/mt5/validate", {
@@ -284,13 +287,17 @@ export default function ConfigPage() {
               </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <button onClick={testMt5}
-                  disabled={mt5State === "testing" || !config.mt5Account || !config.mt5Password || !config.mt5Server}
-                  className={"flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all disabled:opacity-50 disabled:pointer-events-none " +
-                    (mt5State === "ok" ? "bg-bullish/10 border border-bullish/20 text-bullish hover:bg-bullish/20" : "bg-gradient-to-r from-gold-dark via-gold to-gold-light text-background hover:shadow-lg hover:shadow-gold/20")}>
+                  disabled={mt5State === "testing"}
+                  className={"flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all disabled:opacity-50 " +
+                    (mt5State === "ok" ? "bg-bullish/10 border border-bullish/20 text-bullish" : mt5State === "error" ? "bg-bearish/10 border border-bearish/20 text-bearish" : "bg-gradient-to-r from-gold-dark via-gold to-gold-light text-background hover:shadow-lg hover:shadow-gold/20")}>
                   {mt5State === "testing" ? <><Loader2 className="h-4 w-4 animate-spin" />Connecting...</>
                     : mt5State === "ok"   ? <><CheckCircle2 className="h-4 w-4" />Connected</>
+                    : mt5State === "error" ? <><XCircle className="h-4 w-4" />Retry</>
                     : <><Monitor className="h-4 w-4" />Connect MT5</>}
                 </button>
+                {mt5State !== "ok" && mt5State !== "testing" && (!config.mt5Account || !config.mt5Server) && (
+                  <span className="text-xs text-text-muted">Fill account & server to connect</span>
+                )}
                 {mt5State === "ok" && (
                   <button onClick={downloadEnv}
                     className="flex items-center gap-2 rounded-xl bg-surface border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-all">
