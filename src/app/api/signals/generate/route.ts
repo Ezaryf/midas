@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBackendUrl, config } from "@/lib/config";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   try {
-    const res = await fetch("http://localhost:8000/api/signals/force-generate", {
+    const res = await fetch(getBackendUrl(config.api.signals.generate), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

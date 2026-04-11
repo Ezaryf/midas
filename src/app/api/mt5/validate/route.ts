@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBackendUrl } from "@/lib/config";
+
+const MT5_VALIDATE_PATH = "/api/mt5/validate";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   try {
-    const res = await fetch("http://localhost:8000/api/mt5/validate", {
+    const res = await fetch(getBackendUrl(MT5_VALIDATE_PATH), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
