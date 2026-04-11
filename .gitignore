@@ -63,4 +63,5 @@ package-lock.json
 .agents/
 .claude/
 .kiro/
+*.pyc
 backend/app/api/ws/__pycache__/mt5_handler.cpython-313.pyc

@@ -235,6 +235,7 @@ async def background_trading_loop():
             
             await asyncio.sleep(interval)
             state.check_and_reset_daily()
+            state.refresh_from_db()
 
             max_daily_trades = loop_cfg["max_daily_trades"]
             if state.daily_trades >= max_daily_trades:
