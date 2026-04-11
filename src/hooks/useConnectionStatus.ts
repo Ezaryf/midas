@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMidasStore } from "@/store/useMidasStore";
 import { fetchWithSchema } from "@/lib/http";
 import { backendHealthSchema } from "@/lib/schemas/api";
+import { config } from "@/lib/config";
 
 export type ServiceStatus = "idle" | "checking" | "connected" | "error";
 
@@ -49,7 +50,7 @@ export function useConnectionStatus() {
     backendMsg: backendQuery.isLoading
       ? "Connecting..."
       : backendQuery.isError || backendQuery.data?.status === "offline"
-        ? "Cannot reach localhost:8000 — run start.bat in backend/"
+        ? `Cannot reach ${config.backend.http.replace("http://", "")} — run start.bat in backend/`
         : "Online · port 8000",
     mt5Msg,
     latestPrice: backendQuery.data?.latest_price ?? null,

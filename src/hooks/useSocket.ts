@@ -3,8 +3,8 @@
 import { startTransition, useEffect, useRef } from 'react';
 import { useMidasStore, type PriceUpdate, type TradeSignal } from '@/store/useMidasStore';
 import type { AnalysisBatch } from '@/lib/types';
+import { getWsUrl } from '@/lib/config';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/mt5';
 const RETRY_DELAY = 5000;
 
 export const useSocket = () => {
@@ -25,7 +25,7 @@ export const useSocket = () => {
         socketRef.current.close();
       }
 
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(getWsUrl());
       socketRef.current = ws;
 
       ws.onopen = () => {
