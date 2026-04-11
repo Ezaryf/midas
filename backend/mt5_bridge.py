@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # Load .env file if present
@@ -433,34 +433,157 @@ def _fetch_candles(symbol: str, timeframe: str, count: int = CANDLE_BARS) -> lis
         return []
 
 
+# ── Trade Synchronizer ────────────────────────────────────────────────────────
+
+class TradeSynchronizer:
+    """Synchronizes MT5 ground truth (manual trades + history) with MySQL."""
+    def __init__(self, db, target_symbol: str, magic_number: int):
+        self.db = db
+        self.symbol = target_symbol
+        self.magic_number = magic_number
+        self.last_sync_timestamp = 0
+
+    def sync_all(self):
+        """Perform a full synchronization of positions and recent history."""
+        if not self.db or not self.db.is_enabled():
+            return
+
+        try:
+            # 1. Open positions are always synced fresh (small dataset)
+            self._sync_positions()
+
+            # 2. History sync with Delta logic
+            from_time = None
+            if self.last_sync_timestamp == 0:
+                # Initialization: Check DB for the last synced ticket
+                last_ticket = self.db.get_last_sync_ticket()
+                if last_ticket > 0:
+                    deals = mt5.history_deals_get(ticket=last_ticket)
+                    if deals:
+                        # Start sync from the time of the last known deal
+                        from_time = datetime.fromtimestamp(deals[0].time, tz=timezone.utc)
+                        logger.info(f"🔄 Resuming history sync from ticket #{last_ticket} ({from_time})")
+            
+            # If still 0 or no ticket found, start from beginning of time
+            if from_time is None:
+                from_time = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                if self.last_sync_timestamp == 0:
+                    logger.info("📡 Starting first-time ALL-TIME history sync...")
+
+            # Sync from 'from_time' to now
+            self._sync_history(from_time)
+            
+            # Update last sync timestamp to now (for the next loop)
+            self.last_sync_timestamp = int(datetime.now(timezone.utc).timestamp())
+
+        except Exception as e:
+            logger.error(f"Trade sync failed: {e}")
+
+    def _sync_positions(self):
+        """Fetch all current open positions and mirror to DB."""
+        positions = mt5.positions_get()
+        if positions is None:
+            return
+
+        for pos in positions:
+            data = {
+                "ticket": pos.ticket,
+                "direction": "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL",
+                "symbol": pos.symbol,
+                "entry_price": pos.price_open,
+                "lot_size": pos.volume,
+                "magic_number": pos.magic,
+                "comment": pos.comment,
+                "status": "OPEN",
+                "created_at": datetime.fromtimestamp(pos.time, tz=timezone.utc),
+                "stop_loss": pos.sl,
+                "take_profit": pos.tp,
+                "profit": pos.profit,
+                "commission": getattr(pos, "commission", 0.0),
+                "swap": pos.swap,
+            }
+            self.db.upsert_order_from_mt5(data)
+
+    def _sync_history(self, from_date: datetime):
+        """Fetch historical deals since from_date and sync to DB."""
+        deals = mt5.history_deals_get(from_date, datetime.now(timezone.utc))
+        if deals is None:
+            return
+
+        for deal in deals:
+            # Only sync deals that are TRADE_ACTION_DEAL and Type BUY/SELL
+            if deal.type not in (mt5.ORDER_TYPE_BUY, mt5.ORDER_TYPE_SELL):
+                continue
+            
+            data = {
+                "ticket": deal.ticket,
+                "direction": "BUY" if deal.type == mt5.ORDER_TYPE_BUY else "SELL",
+                "symbol": deal.symbol,
+                "entry_price": deal.price,
+                "lot_size": deal.volume,
+                "magic_number": deal.magic,
+                "comment": deal.comment,
+                "status": "CLOSED" if deal.entry == mt5.DEAL_ENTRY_OUT else "ENTRY_SYNC",
+                "created_at": datetime.fromtimestamp(deal.time, tz=timezone.utc),
+                "closed_at": datetime.fromtimestamp(deal.time, tz=timezone.utc) if deal.entry == mt5.DEAL_ENTRY_OUT else None,
+                "close_price": deal.price if deal.entry == mt5.DEAL_ENTRY_OUT else None,
+                "profit": deal.profit,
+                "commission": deal.commission,
+                "swap": deal.swap,
+                "close_reason": "mt5_history_sync"
+            }
+            self.db.upsert_order_from_mt5(data)
+
+    async def sync_loop(self, interval: int = 30):
+        """Periodic sync task."""
+        while True:
+            self.sync_all()
+            await asyncio.sleep(interval)
+
+
 # ── WebSocket Client ──────────────────────────────────────────────────────────
 
 async def run(auto_trade: bool = False):
     logger.info(f"Connecting to Midas backend at {WS_URL}...")
     logger.info(f"Auto-trade: {'ENABLED ⚡' if auto_trade else 'DISABLED (display only)'}")
 
-    # Start position monitor if auto-trade is enabled
+    # Start synchronizer and position monitor
     position_monitor = None
-    if auto_trade:
-        try:
-            import sys
-            sys.path.insert(0, str(Path(__file__).parent))
-            from app.services.position_monitor import get_position_monitor
+    synchronizer = None
+    
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from app.services.database import db
+        from app.services.position_monitor import get_position_monitor
+        
+        if db and db.is_enabled():
+            synchronizer = TradeSynchronizer(db, SYMBOL, MAGIC_NUMBER)
+            logger.info("📡 Trade Synchronizer created.")
+            # Run one initial sync before entering loop
+            synchronizer.sync_all()
+            logger.info("✅ Initial MT5 history sync complete.")
+
+        if auto_trade:
             position_monitor = get_position_monitor()
             if position_monitor:
                 position_monitor.start()
-        except Exception as e:
-            logger.error(f"Failed to start position monitor: {e}")
+    except Exception as e:
+        logger.error(f"Failed to start bridge services: {e}")
 
     async for ws in websockets.connect(WS_URL, ping_interval=20, ping_timeout=10):
         try:
             logger.info("✅ Connected to Midas backend. Streaming ticks...")
-            await asyncio.gather(
+            tasks = [
                 tick_sender(ws),
                 candle_sender(ws),
                 command_receiver(ws, auto_trade),
                 order_executor_worker(ws, auto_trade),
-            )
+            ]
+            if synchronizer:
+                tasks.append(synchronizer.sync_loop(30))
+                
+            await asyncio.gather(*tasks)
         except websockets.ConnectionClosed:
             logger.warning("Connection closed — reconnecting in 5s...")
             await asyncio.sleep(5)
