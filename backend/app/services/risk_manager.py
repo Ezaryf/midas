@@ -187,7 +187,7 @@ class RiskManager:
         # Round to 2 decimals
         lot_size = round(lot_size, 2)
         
-        logger.info(f"Position sizing: Balance ${account_balance:.2f} | Risk ${risk_amount:.2f} | Pip risk {pip_risk:.0f} → Lot {lot_size}")
+        logger.debug(f"Position sizing: Balance ${account_balance:.2f} | Risk ${risk_amount:.2f} | Pip risk {pip_risk:.0f} → Lot {lot_size}")
         
         return lot_size
 
@@ -217,7 +217,7 @@ class RiskManager:
 
         adjusted = round(base_lot_size * size_multiplier, 2)
         adjusted = max(self.config.min_lot_size, min(adjusted, self.config.max_lot_size))
-        logger.info(
+        logger.debug(
             f"Shadow sizing: setup={setup_type} trades={trades} win_rate={win_rate:.2f} "
             f"multiplier={size_multiplier:.2f} -> lot {adjusted}"
         )

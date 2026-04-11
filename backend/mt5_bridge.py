@@ -43,6 +43,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MT5Bridge")
 
+# Suppress verbose third-party loggers
+logging.getLogger("MetaTrader5").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 WS_URL        = os.getenv("MIDAS_WS_URL", "ws://localhost:8000/ws/mt5")
 MT5_LOGIN     = int(os.getenv("MT5_LOGIN", "0"))
@@ -685,7 +689,10 @@ async def order_executor_worker(ws, auto_trade: bool):
         else:
             result = place_order(data, risk_manager=risk_manager)
 
-        logger.info(f"   Execution result: {result}")
+        if result.get("status") == "blocked":
+            logger.warning(f"Blocked: {result.get('reason')}")
+        elif result.get("status") == "ok":
+            logger.info(f"Executed: {direction} {result.get('volume')} lots @ {result.get('price')} (ticket #{result.get('ticket')})")
 
         if result.get("status") == "blocked" and db and db.is_enabled():
             def _log_risk():
@@ -823,7 +830,7 @@ async def command_receiver(ws, auto_trade: bool):
             direction = str(data.get("direction", "HOLD")).upper()
             action = payload.get("action")
 
-            logger.info(f"📡 Signal received [{signal_id}] ({action}): {direction} | confidence {data.get('confidence')}%")
+            logger.info(f"Signal: {direction} @{data.get('entry_price')} conf={data.get('confidence')}% sl={data.get('stop_loss')}")
 
             if action != "PLACE_ORDER":
                 logger.debug("   Display-only signal; no MT5 order requested.")
