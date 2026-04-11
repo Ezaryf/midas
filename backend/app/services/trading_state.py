@@ -105,14 +105,18 @@ class TradingState:
                         self.daily_pnl = 0.0
                         self.consecutive_losses = 0
 
-                # Count today's trades from actual orders
+                # Count today's trades and PnL from the synced orders table
+                # We count distinct tickets to avoid double-counting multi-deal fills
                 today_str = self.last_reset_date.isoformat()
+                
+                # Count total entries today
                 cursor.execute(
-                    "SELECT COUNT(*) as cnt FROM orders WHERE created_at >= %s",
+                    "SELECT COUNT(DISTINCT ticket) as cnt, SUM(profit + commission + swap) as pnl FROM orders WHERE created_at >= %s",
                     (today_str,),
                 )
-                count_row = cursor.fetchone()
-                self.daily_trades = int(count_row["cnt"]) if count_row else 0
+                stats = cursor.fetchone()
+                self.daily_trades = int(stats["cnt"]) if stats and stats["cnt"] else 0
+                self.daily_pnl = float(stats["pnl"]) if stats and stats["pnl"] else 0.0
 
                 cursor.close()
             finally:
@@ -240,6 +244,36 @@ class TradingState:
         with self._lock:
             self.consecutive_losses = 0
         self._persist()
+
+    def refresh_from_db(self):
+        """Force a refresh of daily counters from the database (Sync from MT5 Bridge updates)."""
+        db = self._get_db()
+        if not db:
+            return
+
+        try:
+            conn = db._get_conn()
+            if not conn:
+                return
+            try:
+                cursor = conn.cursor(dictionary=True)
+                today_str = self.last_reset_date.isoformat()
+                
+                cursor.execute(
+                    "SELECT COUNT(DISTINCT ticket) as cnt, SUM(profit + commission + swap) as pnl FROM orders WHERE created_at >= %s",
+                    (today_str,),
+                )
+                stats = cursor.fetchone()
+                
+                with self._lock:
+                    self.daily_trades = int(stats["cnt"]) if stats and stats["cnt"] else 0
+                    self.daily_pnl = float(stats["pnl"]) if stats and stats["pnl"] else 0.0
+                    
+                cursor.close()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug(f"Failed to refresh counters from DB: {e}")
 
 
 # Global singleton

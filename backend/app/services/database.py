@@ -22,7 +22,7 @@ from app.schemas.signal import TradeSignal
 
 logger = logging.getLogger(__name__)
 
-# Reconnect backoff: 30s → 60s → 120s → 240s max
+# Reconnect backoff: 30s â†’ 60s â†’ 120s â†’ 240s max
 _RECONNECT_BASE_SECONDS = 30
 _RECONNECT_MAX_SECONDS = 240
 
@@ -45,13 +45,13 @@ def _parse_mysql_url(url: str) -> dict:
     # user:password@host:port/database
     at_idx = url.rfind("@")
     if at_idx == -1:
-        raise ValueError(f"Invalid MySQL URL — no '@' found")
+        raise ValueError(f"Invalid MySQL URL â€” no '@' found")
 
     user_pass = url[:at_idx]
     host_db = url[at_idx + 1:]
 
     user, password = user_pass.split(":", 1) if ":" in user_pass else (user_pass, "")
-    # URL-decode user and password (e.g. %40 → @)
+    # URL-decode user and password (e.g. %40 â†’ @)
     user = unquote(user)
     password = unquote(password)
 
@@ -91,11 +91,11 @@ class DatabaseService:
     def _connect(self):
         """Attempt to connect to MySQL."""
         if not self._mysql_url:
-            logger.warning("MySQL URL not configured — database features disabled")
+            logger.warning("MySQL URL not configured â€” database features disabled")
             return
 
         if mysql is None:
-            logger.warning("mysql-connector-python not installed — database features disabled")
+            logger.warning("mysql-connector-python not installed â€” database features disabled")
             return
 
         try:
@@ -111,7 +111,7 @@ class DatabaseService:
             # Auto-create tables if they don't exist
             self._ensure_tables()
 
-            logger.info("✅ Connected to MySQL")
+            logger.info("âœ… Connected to MySQL")
         except Exception as e:
             logger.error(f"Failed to connect to MySQL: {e}")
             self._pool = None
@@ -125,6 +125,49 @@ class DatabaseService:
         except Exception:
             self._pool = None
             return None
+
+
+    def _column_exists(self, table: str, column: str) -> bool:
+        """Check if a column exists in a specific table."""
+        conn = self._get_conn()
+        if not conn:
+            return False
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = %s
+                  AND column_name = %s
+                  AND table_schema = (SELECT DATABASE())
+            """
+            cursor.execute(query, (table, column))
+            res = cursor.fetchone()
+            cursor.close()
+            return bool(res and res[0] > 0)
+        except Exception:
+            return False
+        finally:
+            conn.close()
+
+    def _add_column_if_missing(self, table: str, column: str, definition: str):
+        """Safely add a column to an existing table if it doesn't exist."""
+        if self._column_exists(table, column):
+            return
+
+        conn = self._get_conn()
+        if not conn:
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            conn.commit()
+            cursor.close()
+            logger.info(f"✅ Added missing column '{column}' to table '{table}'")
+        except Exception as e:
+            logger.error(f"Failed to add column '{column}' to table '{table}': {e}")
+        finally:
+            conn.close()
 
     def _ensure_tables(self):
         """Create tables if they do not exist."""
@@ -168,11 +211,20 @@ class DatabaseService:
                     INDEX idx_status (status)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    account_id VARCHAR(36) PRIMARY KEY,
+                    config_json JSON NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
                     id VARCHAR(36) PRIMARY KEY,
                     signal_id VARCHAR(36),
-                    ticket INT NOT NULL,
+                    ticket INT NOT NULL UNIQUE,
                     direction VARCHAR(10) NOT NULL,
                     entry_price DECIMAL(12,4) NOT NULL,
                     stop_loss DECIMAL(12,4) NOT NULL,
@@ -241,19 +293,14 @@ class DatabaseService:
                     INDEX idx_created (created_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
-            alter_statements = [
-                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)",
-                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS analysis_batch_id VARCHAR(64)",
-                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS setup_type VARCHAR(64)",
-                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS signal_context JSON",
-                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS entry_spread DECIMAL(12,4)",
-                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS slippage_points DECIMAL(12,4)",
-            ]
-            for statement in alter_statements:
-                try:
-                    cursor.execute(statement)
-                except Exception:
-                    logger.debug(f"Schema alter skipped: {statement}")
+
+            # Ensure orders table has required newer columns
+            self._add_column_if_missing("orders", "symbol", "VARCHAR(20)")
+            self._add_column_if_missing("orders", "analysis_batch_id", "VARCHAR(64)")
+            self._add_column_if_missing("orders", "setup_type", "VARCHAR(64)")
+            self._add_column_if_missing("orders", "signal_context", "JSON")
+            self._add_column_if_missing("orders", "entry_spread", "DECIMAL(12,4)")
+            self._add_column_if_missing("orders", "slippage_points", "DECIMAL(12,4)")
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS data_quality_log (
@@ -406,7 +453,7 @@ class DatabaseService:
             """)
             conn.commit()
             cursor.close()
-            logger.info("✅ MySQL tables verified/created")
+            logger.info("âœ… MySQL tables verified/created")
         except Exception as e:
             logger.error(f"Failed to ensure MySQL tables: {e}")
         finally:
@@ -440,7 +487,7 @@ class DatabaseService:
                 **params,
             )
             self._reconnect_attempts = 0
-            logger.info("✅ MySQL reconnected successfully")
+            logger.info("âœ… MySQL reconnected successfully")
             return True
         except Exception as e:
             logger.warning(f"MySQL reconnect failed: {e}")
@@ -452,7 +499,7 @@ class DatabaseService:
             return True
         return self._try_reconnect()
 
-    # ── Signals ───────────────────────────────────────────────────────────────
+    # â”€â”€ Signals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def save_signal(
         self,
@@ -540,7 +587,7 @@ class DatabaseService:
             )
             conn.commit()
             cursor.close()
-            logger.info(f"✅ Signal saved to MySQL: {signal_id}")
+            logger.info(f"âœ… Signal saved to MySQL: {signal_id}")
             return signal_id
 
         except Exception as e:
@@ -613,7 +660,7 @@ class DatabaseService:
             )
             conn.commit()
             cursor.close()
-            logger.info(f"✅ AI Reasoning updated for signal {signal_id}")
+            logger.info(f"âœ… AI Reasoning updated for signal {signal_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to update signal reasoning for {signal_id}: {e}")
@@ -621,7 +668,7 @@ class DatabaseService:
         finally:
             conn.close()
 
-    # ── Orders ────────────────────────────────────────────────────────────────
+    # â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def save_order(
         self,
@@ -673,7 +720,7 @@ class DatabaseService:
             )
             conn.commit()
             cursor.close()
-            logger.info(f"✅ Order saved to MySQL: ticket #{ticket}")
+            logger.info(f"âœ… Order saved to MySQL: ticket #{ticket}")
             return order_id
         except Exception as e:
             logger.error(f"Failed to save order: {e}")
@@ -713,7 +760,7 @@ class DatabaseService:
             )
             conn.commit()
             cursor.close()
-            logger.info(f"✅ Order #{ticket} closed: {close_reason} | P&L: {profit}")
+            logger.info(f"âœ… Order #{ticket} closed: {close_reason} | P&L: {profit}")
         except Exception as e:
             logger.error(f"Failed to update order close: {e}")
         finally:
@@ -759,7 +806,7 @@ class DatabaseService:
         finally:
             conn.close()
 
-    # ── Account Snapshots ─────────────────────────────────────────────────────
+    # â”€â”€ Account Snapshots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def save_account_snapshot(
         self,
@@ -827,7 +874,7 @@ class DatabaseService:
         finally:
             conn.close()
 
-    # ── Performance Metrics ───────────────────────────────────────────────────
+    # â”€â”€ Performance Metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def calculate_performance_metrics(self, period: str = "ALL_TIME"):
         if not self.is_enabled():
@@ -913,7 +960,7 @@ class DatabaseService:
             )
             conn.commit()
             cursor.close()
-            logger.info(f"✅ Performance metrics calculated for {period}")
+            logger.info(f"âœ… Performance metrics calculated for {period}")
         except Exception as e:
             logger.error(f"Failed to calculate performance metrics: {e}")
         finally:
@@ -942,7 +989,7 @@ class DatabaseService:
         finally:
             conn.close()
 
-    # ── Risk Events ───────────────────────────────────────────────────────────
+    # â”€â”€ Risk Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def log_risk_event(
         self,
@@ -967,7 +1014,7 @@ class DatabaseService:
             )
             conn.commit()
             cursor.close()
-            logger.warning(f"⚠️ Risk event: {event_type} — {description}")
+            logger.warning(f"âš ï¸ Risk event: {event_type} â€” {description}")
         except Exception as e:
             logger.error(f"Failed to log risk event: {e}")
         finally:
@@ -1564,6 +1611,139 @@ class DatabaseService:
         finally:
             conn.close()
 
+    def upsert_order_from_mt5(self, data: dict) -> bool:
+        """Upsert an order record from MT5 data (Sync ground truth)."""
+        if not self.is_enabled():
+            return False
+
+        conn = self._get_conn()
+        if not conn:
+            return False
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO orders (
+                    id, ticket, direction, symbol, entry_price, 
+                    stop_loss, take_profit, lot_size, magic_number, comment, status, created_at,
+                    closed_at, close_price, profit, commission, swap, close_reason
+                ) VALUES (
+                    %s, %s, %s, %s, %s, 
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s
+                ) ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    closed_at = VALUES(closed_at),
+                    close_price = VALUES(close_price),
+                    profit = VALUES(profit),
+                    commission = VALUES(commission),
+                    swap = VALUES(swap),
+                    close_reason = VALUES(close_reason)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    data['ticket'],
+                    data['direction'],
+                    data['symbol'],
+                    data['entry_price'],
+                    data.get('stop_loss', 0.0),
+                    data.get('take_profit', 0.0),
+                    data['lot_size'],
+                    data['magic_number'],
+                    data['comment'],
+                    data['status'],
+                    data['created_at'],
+                    data.get('closed_at'),
+                    data.get('close_price'),
+                    data.get('profit'),
+                    data.get('commission'),
+                    data.get('swap'),
+                    data.get('close_reason'),
+                ),
+            )
+            conn.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to upsert MT5 order: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_last_sync_ticket(self) -> int:
+        """Fetch the largest ticket number we have in our database."""
+        if not self.is_enabled():
+            return 0
+        conn = self._get_conn()
+        if not conn:
+            return 0
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(ticket) FROM orders")
+            res = cursor.fetchone()
+            cursor.close()
+            return res[0] if res and res[0] else 0
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def get_settings(self, account_id: str = "default") -> dict:
+        """Fetch configuration overrides for a specific account."""
+        if not self.is_enabled():
+            return {}
+        conn = self._get_conn()
+        if not conn:
+            return {}
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT config_json FROM settings WHERE account_id = %s", (account_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            if row and row["config_json"]:
+                if isinstance(row["config_json"], str):
+                    return json.loads(row["config_json"])
+                return row["config_json"]
+            return {}
+        except Exception as e:
+            logger.error(f"Failed to fetch settings for {account_id}: {e}")
+            return {}
+        finally:
+            conn.close()
+
+    def update_settings(self, account_id: str, data: dict) -> bool:
+        """Update configuration overrides for a specific account."""
+        if not self.is_enabled():
+            return False
+            
+        # Merge with existing settings
+        current = self.get_settings(account_id)
+        current.update(data)
+        
+        conn = self._get_conn()
+        if not conn:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO settings (account_id, config_json)
+                   VALUES (%s, %s)
+                   ON DUPLICATE KEY UPDATE 
+                     config_json = VALUES(config_json),
+                     updated_at = NOW()
+                """,
+                (account_id, json.dumps(current))
+            )
+            conn.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update settings for {account_id}: {e}")
+            return False
+        finally:
+            conn.close()
 
 # Global instance
 db = DatabaseService()
