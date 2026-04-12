@@ -34,6 +34,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("No AI_API_KEY or OPENAI_API_KEY found in environment")
 
+    # Start AllTick gold stream (secondary price source)
+    from app.services.gold_stream import start_gold_stream
+    if os.getenv("ALLTICK_ENABLED", "false").lower() == "true":
+        start_gold_stream()
+        logger.info("AllTick gold stream started")
+    else:
+        logger.info("AllTick gold stream disabled")
+
     # Start background trading loop on startup
     loop_task = asyncio.create_task(background_trading_loop())
     logger.info("Background trading loop started.")
@@ -89,10 +97,12 @@ async def health_readiness():
 
         latest_candles = runtime_state.snapshot().get("latest_candles", {})
         bridge_connected = len(manager.active_connections) > 0
+        tick_source = runtime_state.get_tick_source()
         checks["mt5"] = {
             "status": "ok" if bridge_connected and latest_candles else "degraded" if bridge_connected else "unavailable",
             "connected": bridge_connected,
             "live_candles": bool(latest_candles),
+            "tick_source": tick_source,
         }
     except Exception as e:
         checks["mt5"] = {"status": "error", "message": str(e)}
@@ -116,6 +126,13 @@ async def health_readiness():
         "key_configured": bool(ai_key),
     }
 
+    # AllTick stream check
+    alltick_enabled = os.getenv("ALLTICK_ENABLED", "false").lower() == "true"
+    checks["alltick"] = {
+        "status": "enabled" if alltick_enabled else "disabled",
+        "enabled": alltick_enabled,
+    }
+
     all_ok = all(
         c.get("status") == "ok" for c in checks.values()
     )
@@ -127,5 +144,12 @@ async def health_readiness():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, reload_dirs=["app"])
+    reload_enabled = os.getenv("BACKEND_RELOAD", "false").lower() == "true"
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=reload_enabled,
+        reload_dirs=["app"] if reload_enabled else None,
+    )
 
