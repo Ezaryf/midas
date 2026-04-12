@@ -1,7 +1,10 @@
 import os
+import logging
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeStateService:
@@ -9,6 +12,7 @@ class RuntimeStateService:
         self._lock = Lock()
         self._latest_tick: dict[str, Any] | None = None
         self._latest_tick_received_at: datetime | None = None
+        self._tick_source: str = "none"
         self._trading_style: str = "Scalper"
         self._target_symbol: str = os.getenv("MT5_SYMBOL", "XAUUSD")
         self._ai_provider: str = "openai"
@@ -16,9 +20,32 @@ class RuntimeStateService:
         self._latest_candles: dict[tuple[str, str], dict[str, Any]] = {}
 
     def set_tick(self, tick: dict[str, Any] | None) -> None:
+        if tick is None:
+            with self._lock:
+                self._latest_tick = None
+                self._latest_tick_received_at = None
+                self._tick_source = "none"
+            return
+
+        incoming_source = tick.get("source", "").upper()
+        
         with self._lock:
-            self._latest_tick = dict(tick or {})
-            self._latest_tick_received_at = datetime.now(timezone.utc) if tick else None
+            current_source = self._tick_source
+            
+            if incoming_source == "MT5":
+                self._latest_tick = dict(tick)
+                self._latest_tick_received_at = datetime.now(timezone.utc)
+                self._tick_source = "MT5"
+            elif incoming_source == "ALLTICK":
+                if current_source != "MT5":
+                    self._latest_tick = dict(tick)
+                    self._latest_tick_received_at = datetime.now(timezone.utc)
+                    self._tick_source = "ALLTICK"
+                # If MT5 exists, ignore AllTick (MT5 always wins)
+            else:
+                self._latest_tick = dict(tick)
+                self._latest_tick_received_at = datetime.now(timezone.utc)
+                self._tick_source = incoming_source or "UNKNOWN"
 
     def get_tick(self) -> dict[str, Any] | None:
         with self._lock:
@@ -28,6 +55,10 @@ class RuntimeStateService:
             if self._latest_tick_received_at is not None:
                 payload.setdefault("received_at", self._latest_tick_received_at.isoformat())
             return payload
+
+    def get_tick_source(self) -> str:
+        with self._lock:
+            return self._tick_source
 
     def set_candles(
         self,
