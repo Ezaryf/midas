@@ -53,7 +53,7 @@ MT5_LOGIN     = int(os.getenv("MT5_LOGIN", "0"))
 MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER    = os.getenv("MT5_SERVER", "")
 SYMBOL        = os.getenv("MT5_SYMBOL", "XAUUSD")
-TICK_INTERVAL = float(os.getenv("TICK_INTERVAL", "1.0"))
+TICK_INTERVAL = float(os.getenv("TICK_INTERVAL", "0.1"))
 DEFAULT_LOT   = float(os.getenv("DEFAULT_LOT", "0.01"))
 MAGIC_NUMBER  = 20250101
 CANDLE_PUSH_INTERVAL = float(os.getenv("CANDLE_PUSH_INTERVAL", "5.0"))
@@ -646,6 +646,7 @@ async def tick_sender(ws):
                         "ask":    round(tick.ask, 2),
                         "spread": round(tick.ask - tick.bid, 2),
                         "time":   datetime.fromtimestamp(tick.time, tz=timezone.utc).isoformat(),
+                        "received_at": datetime.now(timezone.utc).isoformat(),
                     },
                 }
                 await ws.send(json.dumps(payload))
@@ -889,20 +890,29 @@ async def command_receiver(ws, auto_trade: bool):
             logger.error(f"Error processing command: {e}")
 
 async def candle_sender(ws):
+    await _push_all_candles(ws, "initial")
+
     while True:
-        for tf_name, tf_val in CANDLE_TIMEFRAMES.items():
-            candles = _fetch_candles(SYMBOL, tf_name)
-            if candles:
-                payload = {
-                    "type": "CANDLES",
-                    "data": {
-                        "symbol": SYMBOL,
-                        "timeframe": tf_name,
-                        "candles": candles,
-                    },
-                }
-                await ws.send(json.dumps(payload))
+        await _push_all_candles(ws, "periodic")
         await asyncio.sleep(CANDLE_PUSH_INTERVAL)
+
+
+async def _push_all_candles(ws, trigger: str):
+    for tf_name in CANDLE_TIMEFRAMES.keys():
+        candles = _fetch_candles(SYMBOL, tf_name)
+        if candles:
+            logger.info(f"📊 [{trigger}] Sending {len(candles)} candles: {SYMBOL} {tf_name}")
+            payload = {
+                "type": "CANDLES",
+                "data": {
+                    "symbol": SYMBOL,
+                    "timeframe": tf_name,
+                    "candles": candles,
+                },
+            }
+            await ws.send(json.dumps(payload))
+        else:
+            logger.debug(f"⚠️ [{trigger}] No candles for {SYMBOL} {tf_name}")
 
 if __name__ == "__main__":
     # Default: auto-trade ON if credentials are configured, OFF otherwise
