@@ -17,8 +17,8 @@ def get_loop_config(account_id: str = "default"):
     db_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
     
     return {
-        "analysis_interval": int(db_settings.get("analysis_interval_seconds", os.getenv("ANALYSIS_INTERVAL_SECONDS", "10"))),
-        "max_daily_trades": int(db_settings.get("max_daily_trades", os.getenv("MAX_DAILY_TRADES", "50"))),
+        "analysis_interval": int(db_settings.get("analysis_interval_seconds", 10)),
+        "max_daily_trades": int(db_settings.get("max_daily_trades", 50)),
         "max_daily_loss_pct": float(db_settings.get("max_daily_loss_pct", "2.0")),
         "max_consecutive_losses": int(db_settings.get("max_consecutive_losses", "3")),
         "gold_spread_points": float(db_settings.get("gold_spread_points", "5.0")),

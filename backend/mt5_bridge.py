@@ -564,6 +564,13 @@ async def run(auto_trade: bool = False):
         if db and db.is_enabled():
             synchronizer = TradeSynchronizer(db, SYMBOL, MAGIC_NUMBER)
             logger.info("📡 Trade Synchronizer created.")
+            
+            # Log current Risk limits to verify sync
+            from app.services.risk_manager import get_risk_manager
+            rm = get_risk_manager()
+            if rm:
+                logger.info(f"🛡️  Active Risk Limits: Concurrent={rm.config.max_concurrent_positions}, Daily Trades={rm.config.max_daily_trades}, Lot={rm.config.min_lot_size}-{rm.config.max_lot_size}, Loss=${rm.config.daily_loss_limit}")
+
             # Run one initial sync before entering loop
             synchronizer.sync_all()
             logger.info("✅ Initial MT5 history sync complete.")
@@ -887,7 +894,7 @@ if __name__ == "__main__":
     print(f"  Symbol  : {SYMBOL}")
     print(f"  Lot     : {DEFAULT_LOT}")
     print(f"  Backend : {WS_URL}")
-    print(f"  Mode    : {'AUTO-TRADE ⚡' if auto_trade else 'Display only'}")
+    print(f"  Mode    : {'AUTO-TRADE [ON]' if auto_trade else 'Display only'}")
     print("="*55 + "\n")
 
     # Retry init until MT5 is open
