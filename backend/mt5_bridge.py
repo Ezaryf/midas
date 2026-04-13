@@ -588,11 +588,25 @@ async def run(auto_trade: bool = False):
     async for ws in websockets.connect(WS_URL, ping_interval=20, ping_timeout=10):
         try:
             logger.info("✅ Connected to Midas backend. Streaming ticks...")
+            
+            async def mt5_health_check():
+                while True:
+                    await asyncio.sleep(30)
+                    try:
+                        account = mt5.account_info()
+                        if account is None:
+                            logger.warning("MT5 connection lost — attempting reconnection...")
+                            break
+                    except Exception:
+                        logger.warning("MT5 health check failed")
+                        break
+            
             tasks = [
                 tick_sender(ws),
                 candle_sender(ws),
                 command_receiver(ws, auto_trade),
                 order_executor_worker(ws, auto_trade),
+                mt5_health_check(),
             ]
             if synchronizer:
                 tasks.append(synchronizer.sync_loop(30))
@@ -915,7 +929,7 @@ if __name__ == "__main__":
     print("="*55 + "\n")
 
     # Retry init until MT5 is open
-    MAX_RETRIES = 10
+    MAX_RETRIES = int(os.getenv("MT5_MAX_RETRIES", "10"))
     for attempt in range(1, MAX_RETRIES + 1):
         if init_mt5():
             break
