@@ -13,15 +13,38 @@ router = APIRouter()
 
 
 class MT5ConnectionManager:
+    _SIGNAL_ACKS_MAX_SIZE = 100
+    _SIGNAL_ACKS_TTL_SECONDS = 300
+
     def __init__(self):
         self.active_connections: list[WebSocket] = []
         self.latest_tick: dict | None = None
         # Buffer last 10 signals so bridge gets them on reconnect
         self._pending_signals: deque[dict] = deque(maxlen=10)
-        # Track signal acknowledgments: signal_id -> {"status": "ok"|"error", "message": str}
+        # Track signal acknowledgments: signal_id -> {"status": "ok"|"error", "message": str, "timestamp": float}
         self._signal_acks: dict[str, dict] = {}
         # Runtime trading style — set by frontend, read by loop
         self.trading_style: str | None = None
+
+    def _cleanup_signal_acks(self):
+        """Remove old signal acknowledgments to prevent memory leak."""
+        import time
+        now = time.time()
+        expired_keys = [
+            sid for sid, data in self._signal_acks.items()
+            if now - data.get("timestamp", 0) > self._SIGNAL_ACKS_TTL_SECONDS
+        ]
+        for sid in expired_keys:
+            del self._signal_acks[sid]
+        
+        # If still too large, remove oldest entries
+        if len(self._signal_acks) > self._SIGNAL_ACKS_MAX_SIZE:
+            sorted_keys = sorted(self._signal_acks.keys(), key=lambda k: self._signal_acks[k].get("timestamp", 0))
+            for sid in sorted_keys[:len(self._signal_acks) - self._SIGNAL_ACKS_MAX_SIZE]:
+                del self._signal_acks[sid]
+        
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired signal acks")
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -79,6 +102,9 @@ class MT5ConnectionManager:
 
     def store_ack(self, signal_id: str, ack_data: dict):
         """Store acknowledgment from bridge for a signal execution."""
+        import time
+        self._cleanup_signal_acks()
+        ack_data["timestamp"] = time.time()
         self._signal_acks[signal_id] = ack_data
         logger.info(f"ACK received for signal {signal_id}: {ack_data.get('status')}")
 

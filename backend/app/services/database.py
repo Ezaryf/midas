@@ -88,6 +88,13 @@ class DatabaseService:
 
         self._connect()
 
+    def close(self):
+        """Shutdown the connection pool."""
+        if self._pool:
+            logger.info("Closing MySQL connection pool...")
+            self._pool = None
+            logger.info("MySQL connection pool closed")
+
     def _connect(self):
         """Attempt to connect to MySQL."""
         if not self._mysql_url:
