@@ -41,8 +41,9 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${inter.variable} ${jetbrainsMono.variable} ${spaceGrotesk.variable} dark`}
+      suppressHydrationWarning
     >
-      <body className="min-h-screen bg-background text-foreground antialiased">
+      <body className="min-h-screen bg-background text-foreground antialiased" suppressHydrationWarning>
         <QueryProvider>{children}</QueryProvider>
       </body>
     </html>

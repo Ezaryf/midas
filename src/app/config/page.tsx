@@ -455,7 +455,7 @@ export default function ConfigPage() {
                   { key: "maxRiskPercent",      label: "Max Risk Per Trade", unit: "%",       step: 0.1, min: 0.1, max: 100  },
                   { key: "dailyLossLimit",      label: "Daily Loss Limit",   unit: "$",       step: 50,  min: 0,   max: 100000 },
                   { key: "newsBlackoutMinutes", label: "News Blackout",      unit: "min",     step: 5,   min: 0,   max: 120   },
-                  { key: "maxConcurrentPositions", label: "Max Positions",  unit: "trades",  step: 1,   min: 1,   max: 100   },
+                  { key: "maxConcurrentPositions", label: "Max Concurrent Positions",  unit: "trades",  step: 1,   min: 1,   max: 100   },
                 ] as const).map(({ key, label, unit, step, min, max }) => (
                   <div key={key} className="rounded-xl bg-surface p-4">
                     <div className="flex items-center justify-between mb-3">
