@@ -520,7 +520,7 @@ class TradeSynchronizer:
                 continue
             
             data = {
-                "ticket": deal.ticket,
+                "ticket": deal.position_id,
                 "direction": "BUY" if deal.type == mt5.ORDER_TYPE_BUY else "SELL",
                 "symbol": deal.symbol,
                 "entry_price": deal.price,
@@ -810,23 +810,34 @@ async def command_receiver(ws, auto_trade: bool):
                     from pathlib import Path
                     if str(Path(__file__).parent) not in sys.path:
                         sys.path.insert(0, str(Path(__file__).parent))
+                    
                     from app.services.risk_manager import get_risk_manager
+                    from app.services.position_monitor import get_position_monitor
+                    from app.services.position_manager import get_position_manager
+                    
+                    logger.info("🔄 Received CONFIG_UPDATE: Refreshing all limits from database...")
+                    
+                    # Update Risk Manager
                     r_manager = get_risk_manager()
                     if r_manager:
-                        data = payload.get("data", {})
-                        if "max_concurrent_positions" in data and data["max_concurrent_positions"] is not None:
-                            r_manager.config.max_concurrent_positions = int(data["max_concurrent_positions"])
-                        if "min_lot_size" in data and data["min_lot_size"] is not None:
-                            r_manager.config.min_lot_size = float(data["min_lot_size"])
-                        if "max_daily_trades" in data and data["max_daily_trades"] is not None:
-                            r_manager.config.max_daily_trades = int(data["max_daily_trades"])
-                        if "max_risk_percent" in data and data["max_risk_percent"] is not None:
-                            r_manager.config.max_risk_percent = float(data["max_risk_percent"])
-                        if "daily_loss_limit" in data and data["daily_loss_limit"] is not None:
-                            r_manager.config.daily_loss_limit = float(data["daily_loss_limit"])
-                        logger.info(f"🔄 Bridge dynamically updated Risk limits: concurrent={r_manager.config.max_concurrent_positions}, trades={r_manager.config.max_daily_trades}")
+                        r_manager.config.refresh_config()
+                        logger.info(f"   ► Risk limits: concurrent={r_manager.config.max_concurrent_positions}, trades={r_manager.config.max_daily_trades}")
+
+                    # Update Position Monitor
+                    p_monitor = get_position_monitor()
+                    if p_monitor and hasattr(p_monitor, "config") and hasattr(p_monitor.config, "refresh_config"):
+                        p_monitor.config.refresh_config()
+                        logger.info(f"   ► Position Monitor refreshed: T/S={p_monitor.config.trailing_stop_enabled}, P/C={p_monitor.config.partial_close_enabled}")
+                        
+                    # Update Position Manager
+                    p_manager = get_position_manager()
+                    if p_manager and hasattr(p_manager, "config") and hasattr(p_manager.config, "from_db"):
+                        p_manager.config = p_manager.config.from_db()
+                        logger.info(f"   ► Position Manager refreshed: Cooldown={p_manager.config.position_cooldown_seconds}s")
+
                 except Exception as e:
-                    logger.error(f"Failed to process CONFIG_UPDATE: {e}")
+                    import traceback
+                    logger.error(f"Failed to process CONFIG_UPDATE: {e}\n{traceback.format_exc()}")
                 continue
 
             if msg_type != "SIGNAL":
