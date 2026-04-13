@@ -83,7 +83,10 @@ def init_mt5() -> bool:
         return False
 
     terminal = mt5.terminal_info()
-    logger.info(f"MT5 terminal: {terminal.name if terminal else 'unknown'}")
+    if terminal is None:
+        logger.error("Failed to get MT5 terminal info")
+        return False
+    logger.info(f"MT5 terminal: {terminal.name}")
 
     if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
         logger.info(f"Logging in as account {MT5_LOGIN} on {MT5_SERVER}...")
@@ -343,8 +346,8 @@ def _close_single_position(pos, *, close_reason: str, db=None) -> dict:
         }
 
     tick = mt5.symbol_info_tick(pos.symbol)
-    close_price = float(getattr(result, "price", 0.0) or 0.0)
-    if not close_price and tick:
+    close_price = getattr(result, "price", None)
+    if close_price is None and tick:
         close_price = float(tick.bid) if pos.type == mt5.ORDER_TYPE_BUY else float(tick.ask)
 
     logger.info(
@@ -794,8 +797,11 @@ async def order_executor_worker(ws, auto_trade: bool):
             logger.warning(f"   🚫 {ack.get('message')}")
         else:
             logger.error(f"   ❌ Order failed: {result}")
-            
-        execution_queue.task_done()
+        
+        try:
+            execution_queue.task_done()
+        except Exception as e:
+            logger.error(f"Failed to mark queue task done: {e}")
 
 
 async def command_receiver(ws, auto_trade: bool):
