@@ -758,9 +758,11 @@ class DatabaseService:
                 WHERE ticket = %s AND status <> 'CLOSED'""",
                 (float(close_price), float(profit), float(commission), float(swap), close_reason, ticket),
             )
+            rows_affected = cursor.rowcount
             conn.commit()
             cursor.close()
-            logger.info(f"âœ… Order #{ticket} closed: {close_reason} | P&L: {profit}")
+            if rows_affected > 0:
+                logger.info(f"âœ… Order #{ticket} closed: {close_reason} | P&L: {profit}")
         except Exception as e:
             logger.error(f"Failed to update order close: {e}")
         finally:
@@ -1632,13 +1634,20 @@ class DatabaseService:
                     %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s
                 ) ON DUPLICATE KEY UPDATE
-                    status = VALUES(status),
-                    closed_at = VALUES(closed_at),
-                    close_price = VALUES(close_price),
+                    status = CASE 
+                        WHEN status = 'CLOSED' THEN 'CLOSED' 
+                        WHEN VALUES(status) = 'CLOSED' THEN 'CLOSED'
+                        ELSE VALUES(status) 
+                    END,
+                    closed_at = CASE WHEN VALUES(closed_at) IS NOT NULL THEN VALUES(closed_at) ELSE closed_at END,
+                    close_price = CASE WHEN VALUES(close_price) IS NOT NULL THEN VALUES(close_price) ELSE close_price END,
                     profit = VALUES(profit),
                     commission = VALUES(commission),
                     swap = VALUES(swap),
-                    close_reason = VALUES(close_reason)
+                    close_reason = CASE 
+                        WHEN VALUES(close_reason) <> 'mt5_history_sync' THEN VALUES(close_reason) 
+                        ELSE close_reason 
+                    END
                 """,
                 (
                     str(uuid.uuid4()),
