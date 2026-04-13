@@ -145,6 +145,7 @@ async def update_settings(req: UpdateSettingsRequest):
     position_manager = get_position_manager()
     position_monitor = get_position_monitor()
 
+    # 1. Update services
     if risk_manager:
         risk_manager.config.refresh_config()
     if position_manager:
@@ -156,7 +157,14 @@ async def update_settings(req: UpdateSettingsRequest):
     if req.analysis_interval_seconds is not None:
         trading_loop.ANALYSIS_INTERVAL = req.analysis_interval_seconds
 
-    # 3. Collect changes for response
+    # 3. Inform MT5 bridge via Websockets
+    try:
+        from app.api.ws.mt5_handler import manager
+        await manager.broadcast_json({"type": "CONFIG_UPDATE", "data": updates})
+    except Exception as e:
+        logger.error(f"Failed to broadcast config update to MT5 bridge: {e}")
+
+    # 4. Collect changes for response
     changes = [f"{k}={v}" for k, v in updates.items()]
 
 
