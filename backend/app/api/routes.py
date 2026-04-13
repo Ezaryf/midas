@@ -138,7 +138,7 @@ async def update_settings(req: UpdateSettingsRequest):
     updates = req.model_dump(exclude_unset=True)
     current_settings.update(updates)
     if db and db.is_enabled():
-        db.save_settings(account_id, current_settings)
+        db.update_settings(account_id, current_settings)
 
     # 1. Update services
     risk_manager = get_risk_manager()
