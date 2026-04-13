@@ -170,9 +170,6 @@ async def update_settings(req: UpdateSettingsRequest):
 
     logger.info(f"Settings updated: {', '.join(changes)}")
 
-    from app.api.ws.mt5_handler import manager
-    await manager.broadcast_json({"type": "CONFIG_UPDATE", "data": req.model_dump(exclude_unset=True)})
-
     return GenericStatusResponse(status="ok", message="Settings updated", data={"changes": changes})
 
 

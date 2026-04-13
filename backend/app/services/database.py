@@ -152,7 +152,12 @@ class DatabaseService:
 
     def _add_column_if_missing(self, table: str, column: str, definition: str):
         """Safely add a column to an existing table if it doesn't exist."""
+        ALLOWED_TABLES = {"orders", "signals", "settings", "daily_stats"}
+        
         if self._column_exists(table, column):
+            return
+        if table not in ALLOWED_TABLES:
+            logger.error(f"Invalid table name: {table}")
             return
 
         conn = self._get_conn()
@@ -160,7 +165,7 @@ class DatabaseService:
             return
         try:
             cursor = conn.cursor()
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            cursor.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
             conn.commit()
             cursor.close()
             logger.info(f"✅ Added missing column '{column}' to table '{table}'")
