@@ -23,44 +23,48 @@ class RiskConfig:
     def refresh_config(self):
         from app.services.database import db
         db_settings = db.get_settings(self.account_id) if db and db.is_enabled() else {}
+        
+        if db_settings:
+            logger.info(f"🔄 RiskConfig loading settings from DB: {list(db_settings.keys())}")
+        else:
+            logger.warning("⚠️ RiskConfig using default settings (No DB overrides found)")
 
-        def _get(key: str, env_key: str, default: str, type_func=float):
+        def _get(key: str, default: str, type_func=float):
             if key in db_settings:
                 return type_func(db_settings[key])
-            return type_func(os.getenv(env_key, default))
+            return type_func(default)
 
-        def _get_bool(key: str, env_key: str, default: str) -> bool:
+        def _get_bool(key: str, default: str) -> bool:
             if key in db_settings:
                 return bool(db_settings[key])
-            return os.getenv(env_key, default).lower() == "true"
+            return default.lower() == "true" if isinstance(default, str) else default
 
         # Position sizing
-        self.max_risk_percent = _get("max_risk_percent", "MAX_RISK_PERCENT", "1.0", float)
-        self.min_lot_size = _get("min_lot_size", "MIN_LOT_SIZE", "0.01", float)
-        self.max_lot_size = _get("max_lot_size", "MAX_LOT_SIZE", "1.0", float)
+        self.max_risk_percent = _get("max_risk_percent", "1.0", float)
+        self.min_lot_size = _get("min_lot_size", "0.01", float)
+        self.max_lot_size = _get("max_lot_size", "1.0", float)
         
         # Exposure limits
-        # Special fallback for max_concurrent_positions
         if "max_concurrent_positions" in db_settings:
             self.max_concurrent_positions = int(db_settings["max_concurrent_positions"])
         else:
-            self.max_concurrent_positions = int(os.getenv("MAX_CONCURRENT_POSITIONS") or os.getenv("AUTO_EXECUTE_MAX_POSITIONS") or "3")
+            self.max_concurrent_positions = 3
 
-        self.max_daily_trades = _get("max_daily_trades", "MAX_DAILY_TRADES", "10", int)
+        self.max_daily_trades = _get("max_daily_trades", "50", int)
         
         # Loss limits
-        self.daily_loss_limit = _get("daily_loss_limit", "DAILY_LOSS_LIMIT", "500.0", float)
-        self.max_drawdown_percent = _get("max_drawdown_percent", "MAX_DRAWDOWN_PERCENT", "20.0", float)
+        self.daily_loss_limit = _get("daily_loss_limit", "500.0", float)
+        self.max_drawdown_percent = _get("max_drawdown_percent", "20.0", float)
         
         # Margin requirements
-        self.min_margin_level = _get("min_margin_level", "MIN_MARGIN_LEVEL", "200.0", float)
-        self.min_free_margin = _get("min_free_margin", "MIN_FREE_MARGIN", "20.0", float)
+        self.min_margin_level = _get("min_margin_level", "200.0", float)
+        self.min_free_margin = _get("min_free_margin", "20.0", float)
         
         # Correlation
-        self.allow_hedging = _get_bool("allow_hedging", "ALLOW_HEDGING", "false")
+        self.allow_hedging = _get_bool("allow_hedging", "false")
         
         # News blackout
-        self.news_blackout_minutes = _get("news_blackout_minutes", "NEWS_BLACKOUT_MINUTES", "30", int)
+        self.news_blackout_minutes = _get("news_blackout_minutes", "30", int)
 
 
 class RiskManager:
