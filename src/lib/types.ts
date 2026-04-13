@@ -299,7 +299,7 @@ export const DEFAULT_CONFIG: MidasConfig = {
   dailyLossLimit: 500,
   newsBlackoutMinutes: 30,
   autoExecuteConfidence: 10,
-  maxDailyTrades: 10,
+  maxDailyTrades: 50,
   analysisIntervalSeconds: 10,
   positionCooldownSeconds: 30,
   maxConcurrentSignals: 3,

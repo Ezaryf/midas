@@ -1,7 +1,7 @@
 export const config = {
   backend: {
-    http: process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000",
-    ws: process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000",
+    http: process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000",
+    ws: process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8000",
   },
   api: {
     health: "/api/health",
