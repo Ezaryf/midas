@@ -112,7 +112,7 @@ class RiskManager:
         
         # Return cached if fresh
         if not force_refresh and self._daily_stats_cache and self._daily_stats_timestamp:
-            if (now - self._daily_stats_timestamp).seconds < 60:
+            if (now - self._daily_stats_timestamp).total_seconds() < 60:
                 return self._daily_stats_cache
         
         # Fetch deals from today
@@ -208,7 +208,8 @@ class RiskManager:
             from app.services.database import db
 
             stats = db.get_setup_performance_stats(setup_type=setup_type)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to fetch setup performance stats: {e}")
             stats = {}
 
         trades = int(stats.get("trades", 0) or 0)
@@ -287,7 +288,7 @@ class RiskManager:
         # 7. Check drawdown
         balance = account.get("balance", 0)
         equity = account.get("equity", 0)
-        if balance > 0:
+        if balance > 0 and equity < balance:
             drawdown_percent = ((balance - equity) / balance) * 100
             if drawdown_percent > self.config.max_drawdown_percent:
                 return False, f"Max drawdown exceeded: {drawdown_percent:.1f}% > {self.config.max_drawdown_percent}%"
@@ -309,7 +310,7 @@ class RiskManager:
         account = self.get_account_info()
         balance = account.get("balance", 0)
         equity = account.get("equity", 0)
-        if balance > 0:
+        if balance > 0 and equity < balance:
             drawdown_percent = ((balance - equity) / balance) * 100
             if drawdown_percent > self.config.max_drawdown_percent:
                 return True, f"Max drawdown exceeded: {drawdown_percent:.1f}%"
