@@ -475,3 +475,53 @@ async def modify_position_manual(ticket: int, sl: float, tp: float):
     if not monitor:
         return {"error": "Position monitor not available"}
     return monitor.modify_position_manual(ticket, sl, tp)
+
+
+@router.get("/sse/stream")
+async def sse_stream():
+    """SSE endpoint for real-time updates (alternative to WebSocket)."""
+    from fastapi.responses import StreamingResponse
+    import json
+    from app.api.ws.mt5_handler import manager
+
+    async def sse_event_generator():
+        """Generator that yields SSE events to connected clients."""
+        heartbeat_count = 0
+        try:
+            logger.info("SSE: Client connected, starting event stream")
+            while True:
+                # Send heartbeat every 5 seconds so browser knows connection is alive
+                heartbeat_count += 1
+                if heartbeat_count % 10 == 0:  # Every ~5 seconds
+                    event = f"data: {json.dumps({'type': 'HEARTBEAT', 'data': {'count': heartbeat_count}})}\n\n"
+                    yield event
+
+                # Get latest tick from runtime_state
+                tick = runtime_state.get_tick()
+                if tick:
+                    tick["source"] = "sse"
+                    event = f"data: {json.dumps({'type': 'TICK', 'data': tick})}\n\n"
+                    yield event
+
+                # Get active signal if any (from pending signals in manager)
+                if manager._pending_signals:
+                    for signal in list(manager._pending_signals)[-1:]:
+                        event = f"data: {json.dumps({'type': 'SIGNAL', 'data': signal})}\n\n"
+                        yield event
+
+                await asyncio.sleep(0.5)  # Send every 500ms
+
+        except GeneratorExit:
+            logger.info("SSE: Client disconnected")
+        except Exception as e:
+            logger.error(f"SSE error: {e}", exc_info=True)
+
+    return StreamingResponse(
+        sse_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
