@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useSocket } from "@/hooks/useSocket";
+import { useSignalPolling } from "@/hooks/useSignalPolling";
 import { useMidasStore } from "@/store/useMidasStore";
 import { useLiveCandles, type Timeframe } from "@/hooks/useLiveCandles";
 import { useCalendar } from "@/hooks/useCalendar";
@@ -249,6 +250,7 @@ export default function DashboardPage() {
   }, []);
 
   useSocket();
+  useSignalPolling();
   useSignalTracker();
   const { activeSignal, latestBatch, marketState, signalHistory, isConnected, clearActiveSignal, targetSymbol, setTargetSymbol } = useMidasStore();
   

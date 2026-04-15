@@ -16,6 +16,7 @@ export interface LivePrice {
   ask: number;
   spread: number;
   updatedAt: string;
+  source?: string;
 }
 
 export function useLivePrice() {
@@ -61,6 +62,10 @@ export function useLivePrice() {
     currentSymbolNormalized === activeSymbolNormalized
   );
 
+  // Detect price source (MT5 bridge vs AllTick fallback)
+  const tickSource = currentPrice?.source || "";
+  const isAllTickFallback = tickSource === "ALLTICK";
+  
   // Extract primitives and apply calibration
   const rawBid = currentPrice?.bid ?? 0;
   const rawAsk = currentPrice?.ask ?? 0;
@@ -130,11 +135,15 @@ export function useLivePrice() {
     if (!isConnected || !isSymbolMatch || bid <= 1 || !sessionData) {
       let error: string | null = null;
       if (!isConnected) {
-        error = "MT5 Bridge Offline";
+        error = isAllTickFallback 
+          ? "Using backup price feed (AllTick)" 
+          : "Waiting for MT5 connection...";
       } else if (!isSymbolMatch) {
         error = `Symbol Mismatch (Midas: ${activeSymbol}, MT5: ${currentSymbol})`;
       } else if (isStale) {
-        error = "Live feed stale";
+        error = "Reconnecting to MT5...";
+      } else if (bid <= 1) {
+        error = "Waiting for live tick...";
       }
 
       return {
@@ -164,9 +173,10 @@ export function useLivePrice() {
         ask,
         spread,
         updatedAt: updatedAt || new Date().toISOString(),
+        source: tickSource,
       } as LivePrice,
       loading: false,
-      error: isStale ? "Live feed stale" : null as string | null,
+      error: isStale ? "Reconnecting to MT5..." : null as string | null,
       isStale,
       ageMs,
       isSymbolMatch,
