@@ -14,6 +14,7 @@ export interface PriceUpdate {
   high24h?: number;
   low24h?: number;
   time: string;
+  source?: string;
 }
 
 interface MidasState {

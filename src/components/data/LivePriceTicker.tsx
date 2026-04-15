@@ -1,12 +1,14 @@
 "use client";
 
 import { useLivePrice } from "@/hooks/useLivePrice";
-import { TrendingUp, TrendingDown, RefreshCw } from "lucide-react";
+import { TrendingUp, TrendingDown, RefreshCw, Loader2 } from "lucide-react";
 
 export default function LivePriceTicker() {
   const { data, loading, error, tick } = useLivePrice();
 
   const isPositive = (data?.change ?? 0) >= 0;
+  const isAllTickFallback = data?.source === "ALLTICK";
+  const isHttpPoll = data?.source === "http-poll";
 
   const priceColor =
     tick === "up"
@@ -20,11 +22,18 @@ export default function LivePriceTicker() {
       <div className="flex items-center gap-8">
         {/* Price */}
         <div className="text-center">
-          <p className="text-xs text-text-muted uppercase tracking-wider mb-1">XAU/USD</p>
+          <p className="text-xs text-text-muted uppercase tracking-wider mb-1">
+            XAU/USD
+            {isAllTickFallback && <span className="text-gold/60 ml-1">(Backup)</span>}
+            {isHttpPoll && <span className="text-gold/60 ml-1">(Polling)</span>}
+          </p>
           {loading ? (
-            <div className="h-8 w-28 rounded-lg bg-surface animate-pulse" />
+            <div className="flex items-center gap-2 text-sm text-text-muted">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Connecting to MT5...</span>
+            </div>
           ) : error ? (
-            <p className="text-sm text-text-muted flex items-center gap-1">
+            <p className="text-sm text-gold flex items-center gap-1">
               <RefreshCw className="h-3 w-3" /> {error}
             </p>
           ) : (

@@ -333,9 +333,9 @@ export default function TradingViewChart({ data, lines = [], legendItems = [], h
     priceLineRefs.current = [];
 
     lines.forEach((line) => {
-      if (!line.price || Number.isNaN(line.price)) return;
+      if (!line.price || Number.isNaN(Number(line.price))) return;
       const pl = candleRef.current!.createPriceLine({
-        price:            line.price,
+        price:            Number(line.price),
         color:            line.color,
         lineWidth:        1,
         lineStyle:        line.style ?? LineStyle.Dashed,
