@@ -12,6 +12,39 @@ logging.basicConfig(level=logging.INFO)
 router = APIRouter()
 
 
+class FrontendConnectionManager:
+    """Manages browser frontend WebSocket connections (read-only)."""
+
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"Frontend connected. Total: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            logger.info(f"Frontend disconnected. Total: {len(self.active_connections)}")
+
+    async def broadcast_json(self, data: dict):
+        """Broadcast data to all frontend connections."""
+        if not self.active_connections:
+            return
+        dead = []
+        for conn in self.active_connections:
+            try:
+                await conn.send_json(data)
+            except Exception:
+                dead.append(conn)
+        for conn in dead:
+            self.disconnect(conn)
+
+
+frontend_manager = FrontendConnectionManager()
+
+
 class MT5ConnectionManager:
     _SIGNAL_ACKS_MAX_SIZE = 100
     _SIGNAL_ACKS_TTL_SECONDS = 300
@@ -54,7 +87,9 @@ class MT5ConnectionManager:
         # Replay any pending signals to the newly connected bridge
         if self._pending_signals:
             logger.info(f"Replaying {len(self._pending_signals)} pending signal(s) to new connection.")
-            for signal in self._pending_signals:
+            # Copy deque before iterating to avoid "deque mutated during iteration" error
+            pending = list(self._pending_signals)
+            for signal in pending:
                 try:
                     await websocket.send_json(signal)
                 except Exception:
@@ -82,6 +117,14 @@ class MT5ConnectionManager:
 
         sanitized_data = sanitize_json_payload(data)
 
+        # Always broadcast to frontend (read-only) - even without bridge!
+        if frontend_manager.active_connections:
+            try:
+                await frontend_manager.broadcast_json(sanitized_data)
+            except Exception:
+                pass  # Frontend disconnected, skip
+
+        # Bridge-specific messages only when bridge is connected
         if not self.active_connections:
             # No bridge connected — queue the signal for when it reconnects
             if sanitized_data.get("type") == "SIGNAL":
@@ -94,7 +137,8 @@ class MT5ConnectionManager:
             try:
                 await conn.send_json(sanitized_data)
             except Exception as e:
-                logger.error(f"Failed to send to client: {e}")
+                # Connection closed or sending on closed WebSocket
+                logger.warning(f"Failed to send to client, marking dead: {e}")
                 dead.append(conn)
 
         for conn in dead:
@@ -160,16 +204,51 @@ class MT5ConnectionManager:
 manager = MT5ConnectionManager()
 
 
+# Frontend router for browser clients
+frontend_router = APIRouter()
+
+
 @router.websocket("/mt5")
 async def mt5_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await websocket.receive_text()
+            except (RuntimeError, WebSocketDisconnect):
+                # WebSocket disconnected — exit gracefully
+                break
             try:
                 payload = json.loads(data)
                 await manager.process_incoming_data(payload)
             except json.JSONDecodeError:
                 logger.error("Failed to decode JSON from MT5 agent")
     except WebSocketDisconnect:
+        pass  # Already handled above
+    finally:
         manager.disconnect(websocket)
+
+
+@frontend_router.websocket("/frontend")
+async def frontend_endpoint(websocket: WebSocket):
+    """Dedicated WebSocket endpoint for browser frontend."""
+    await frontend_manager.connect(websocket)
+    try:
+        while True:
+            try:
+                data = await websocket.receive_text()
+            except (RuntimeError, WebSocketDisconnect):
+                # WebSocket disconnected — exit gracefully
+                break
+            try:
+                payload = json.loads(data)
+                # Frontend is read-only, so we don't process incoming messages
+                # Just log ping/pong for heartbeat
+                if payload.get("type") == "PING":
+                    await websocket.send_json({"type": "PONG"})
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        pass  # Already handled above
+    finally:
+        frontend_manager.disconnect(websocket)

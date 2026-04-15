@@ -10,7 +10,7 @@ except ImportError:
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.ws.mt5_handler import router as mt5_router
+from app.api.ws.mt5_handler import router as mt5_router, frontend_router
 from app.api.routes import router as api_router
 from app.core.loop import background_trading_loop
 import asyncio
@@ -74,6 +74,7 @@ app.add_middleware(
 )
 
 app.include_router(mt5_router, prefix="/ws")
+app.include_router(frontend_router, prefix="/ws")
 app.include_router(api_router, prefix="/api")
 
 
