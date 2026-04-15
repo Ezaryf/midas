@@ -25,8 +25,11 @@ export function useConnectionStatus() {
   const backendQuery = useQuery({
     queryKey: ["backend-health"],
     queryFn: () => fetchWithSchema("/api/backend/health", backendHealthSchema),
-    refetchInterval: 15_000,
-    retry: 0,
+    refetchInterval: 3_000,
+    refetchOnMount: "always",
+    staleTime: 0,
+    retry: 3,
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
   });
 
   const checkBackend = useCallback(async () => {
