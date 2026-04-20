@@ -67,7 +67,7 @@ def _timestamp_index(df: pd.DataFrame, signals: Iterable[TradeSignal]) -> tuple[
 
 def run_signal_backtest(df: pd.DataFrame, signals: Iterable[TradeSignal]) -> BacktestSummary:
     if vbt is None:
-        raise RuntimeError("vectorbt is not installed")
+        return _run_native_signal_backtest(df, signals)
 
     entries, exits, short_entries, short_exits = _timestamp_index(df, signals)
     portfolio = vbt.Portfolio.from_signals(
@@ -87,6 +87,57 @@ def run_signal_backtest(df: pd.DataFrame, signals: Iterable[TradeSignal]) -> Bac
         win_rate=float(stats.get("Win Rate [%]", 0.0)),
         max_drawdown=float(stats.get("Max Drawdown [%]", 0.0)),
         sharpe_ratio=float(stats.get("Sharpe Ratio", 0.0)),
+    )
+
+
+def _run_native_signal_backtest(df: pd.DataFrame, signals: Iterable[TradeSignal]) -> BacktestSummary:
+    if df.empty:
+        return BacktestSummary(total_return=0.0, total_trades=0, win_rate=0.0, max_drawdown=0.0, sharpe_ratio=0.0)
+
+    close = df["close"].astype(float)
+    trades: list[float] = []
+    equity = 1.0
+    equity_curve = [equity]
+    for signal in signals:
+        if signal.direction not in {"BUY", "SELL"} or signal.timestamp is None:
+            continue
+        signal_ts = pd.Timestamp(signal.timestamp)
+        if signal_ts.tzinfo is None:
+            signal_ts = signal_ts.tz_localize("UTC")
+        nearest_idx = close.index.get_indexer([signal_ts], method="nearest")
+        if nearest_idx.size == 0 or nearest_idx[0] < 0:
+            continue
+        entry_pos = int(nearest_idx[0])
+        exit_pos = min(entry_pos + 1, len(close) - 1)
+        if exit_pos == entry_pos:
+            continue
+        entry = float(close.iloc[entry_pos])
+        exit_price = float(close.iloc[exit_pos])
+        if entry <= 0:
+            continue
+        trade_return = (exit_price - entry) / entry
+        if signal.direction == "SELL":
+            trade_return *= -1
+        trade_return -= 0.0007
+        trades.append(trade_return)
+        equity *= 1.0 + trade_return
+        equity_curve.append(equity)
+
+    if not trades:
+        return BacktestSummary(total_return=0.0, total_trades=0, win_rate=0.0, max_drawdown=0.0, sharpe_ratio=0.0)
+
+    returns = pd.Series(trades)
+    curve = pd.Series(equity_curve)
+    drawdown = ((curve.cummax() - curve) / curve.cummax()).max() * 100.0
+    sharpe = 0.0
+    if returns.std(ddof=0) > 0:
+        sharpe = float((returns.mean() / returns.std(ddof=0)) * (len(returns) ** 0.5))
+    return BacktestSummary(
+        total_return=(equity - 1.0) * 100.0,
+        total_trades=len(trades),
+        win_rate=(sum(1 for value in trades if value > 0) / len(trades)) * 100.0,
+        max_drawdown=float(drawdown),
+        sharpe_ratio=sharpe,
     )
 
 

@@ -5,6 +5,7 @@ Prefers TA-Lib when available and falls back to pandas-ta or pandas-native calcu
 from __future__ import annotations
 
 import logging
+import os
 from typing import Literal
 
 import pandas as pd
@@ -16,10 +17,8 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     talib = None
 
-try:
-    import pandas_ta as pandas_ta  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    pandas_ta = None
+pandas_ta = None
+_pandas_ta_import_attempted = False
 
 
 IndicatorEngine = Literal["ta-lib", "pandas-ta", "pandas-native"]
@@ -28,9 +27,25 @@ IndicatorEngine = Literal["ta-lib", "pandas-ta", "pandas-native"]
 def get_indicator_engine() -> IndicatorEngine:
     if talib is not None:
         return "ta-lib"
-    if pandas_ta is not None:
+    if _get_pandas_ta() is not None:
         return "pandas-ta"
     return "pandas-native"
+
+
+def _get_pandas_ta():
+    global pandas_ta, _pandas_ta_import_attempted
+    if os.getenv("MIDAS_ENABLE_PANDAS_TA", "0").lower() in {"0", "false", "no", "off"}:
+        return None
+    if _pandas_ta_import_attempted:
+        return pandas_ta
+    _pandas_ta_import_attempted = True
+    try:
+        import pandas_ta as imported_pandas_ta  # type: ignore
+
+        pandas_ta = imported_pandas_ta
+    except Exception:  # pragma: no cover - optional dependency
+        pandas_ta = None
+    return pandas_ta
 
 
 def _native_rsi(close: pd.Series, length: int = 14) -> pd.Series:
@@ -80,7 +95,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         result["ATRr_14"] = talib.ATR(high, low, close, timeperiod=14)
         return result
 
-    if engine == "pandas-ta":
+    pandas_ta_engine = _get_pandas_ta()
+    if engine == "pandas-ta" and pandas_ta_engine is not None:
         temp = result.copy()
         temp.ta.ema(length=9, append=True)
         temp.ta.ema(length=21, append=True)

@@ -221,12 +221,12 @@ class PositionManager:
 
     # ── Signal Deduplication ──────────────────────────────────────────────────
 
-    def is_duplicate_signal(self, symbol: str, direction: str) -> bool:
+    def is_duplicate_signal(self, symbol: str, direction: str, *, record: bool = True) -> bool:
         """
         Returns True if a signal with the same symbol:direction was emitted
         within the cooldown window.
         """
-        key = symbol  # Block ALL signals for the symbol during cooldown to prevent whipsaws
+        key = f"{symbol}:{direction}"
         now = datetime.now(timezone.utc)
 
         with self._lock:
@@ -239,12 +239,14 @@ class PositionManager:
                         f"({elapsed:.0f}s < {self.config.cooldown_seconds}s cooldown)"
                     )
                     return True
+            if record:
+                self._last_signal_time[key] = now
 
         return False
 
     def mark_signal_emitted(self, symbol: str, direction: str) -> None:
         """Start the duplicate cooldown and track pending execution."""
-        key = symbol
+        key = f"{symbol}:{direction}"
         now = datetime.now(timezone.utc)
         with self._lock:
             self._last_signal_time[key] = now
@@ -424,7 +426,7 @@ class PositionManager:
                 continue
 
             # Check deduplication
-            is_dup = self.is_duplicate_signal(symbol, direction)
+            is_dup = self.is_duplicate_signal(symbol, direction, record=False)
 
             # Decide action
             decision = self.decide_action(

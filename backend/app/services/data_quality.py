@@ -104,7 +104,7 @@ def get_data_quality_context(
         age_seconds = 999.0
     age_bars = _age_bars(source_result)
     allowed_strategy_class = _allowed_strategy_class(age_bars, config)
-    freshness_passed = age_bars <= config.hard_block_max_bars
+    freshness_passed = bool(source_result.freshness_ok) and age_bars <= config.hard_block_max_bars
     notes = list(source_result.notes)
     if not freshness_passed:
         notes.append("stale_primary_data")

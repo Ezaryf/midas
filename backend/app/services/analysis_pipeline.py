@@ -52,6 +52,7 @@ from app.services.repositories import SignalPersistencePayload, signal_repositor
 from app.services.runtime_state import runtime_state
 from app.services.score_calibration import ScoreCalibrator
 from app.services.shadow_engine import ShadowEngine
+from app.services.symbols import resolve_execution_symbol, symbols_match
 from app.services.technical_analysis import compute_indicators
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ class MarketDataService:
     def _parse_tick(tick: dict[str, Any] | None) -> tuple[dict[str, Any] | None, bool]:
         if not tick:
             return None, False
-        raw_time = tick.get("time") or tick.get("received_at")
+        raw_time = tick.get("received_at") or tick.get("time")
         if not raw_time:
             return tick, bool(tick.get("bid"))
         try:
@@ -142,7 +143,7 @@ class MarketDataService:
         loop = asyncio.get_event_loop()
         runtime_tick = runtime_state.get_tick()
         tick, tick_present = self._parse_tick(runtime_tick)
-        tick_symbol_match = bool(tick and tick.get("symbol") == target_symbol)
+        tick_symbol_match = bool(tick and symbols_match(tick.get("symbol"), target_symbol))
         tick_fresh = False
         if tick_present and tick:
             tick_fresh = float(tick.get("_age_seconds", self._tick_freshness_seconds(config) + 1)) <= self._tick_freshness_seconds(config)
@@ -681,6 +682,16 @@ class SignalPublisher:
         trend = getattr(primary_snapshot, "regime", batch.market_regime or "neutral").upper()
 
         execution_tradeable = True if not context.execution_adjustment else bool(context.execution_adjustment.tradeable)
+        for reason in batch.primary.no_trade_reasons or []:
+            if reason.get("code") == "directional_conflict" and reason.get("blocking"):
+                reason["blocking"] = False
+                reason["message"] = f"Caution: {reason.get('message', 'Directional conflict near execution zone')}"
+
+        primary_blocking_reasons = [
+            reason
+            for reason in batch.primary.no_trade_reasons or []
+            if bool(reason.get("blocking"))
+        ]
         if context.force_execution and batch.primary.direction in ("BUY", "SELL"):
             primary_should_auto_execute = (
                 batch.primary.direction in ("BUY", "SELL")
@@ -701,6 +712,7 @@ class SignalPublisher:
                 and not context.news_blocked
                 and not context.risk_blocked
                 and not batch.primary.is_duplicate
+                and not primary_blocking_reasons
                 and batch.primary.position_action in {
                     PositionAction.OPEN.value,
                     PositionAction.REVERSE.value,
@@ -767,7 +779,17 @@ class SignalPublisher:
         primary_payload = batch.primary.model_dump(mode="json")
         primary_payload["session_label"] = context.session_label
         primary_payload["volatility_bucket"] = context.execution_adjustment.volatility_bucket if context.execution_adjustment else "medium"
+        broker_symbol = resolve_execution_symbol(
+            context.symbol,
+            broker_symbol=os.getenv("MT5_SYMBOL"),
+            tick_symbol=(context.tick or {}).get("symbol") if isinstance(context.tick, dict) else None,
+        )
+        primary_payload["broker_symbol"] = broker_symbol
+        primary_payload["execution_symbol"] = broker_symbol
         primary_payload["auto_execute"] = primary_should_auto_execute
+        primary_payload["auto_execute_state"] = "attempted" if primary_should_auto_execute else "blocked" if primary_blocking_reasons else "not_attempted"
+        if primary_blocking_reasons:
+            primary_payload["auto_execute_reason"] = "; ".join(str(reason.get("message") or reason.get("code")) for reason in primary_blocking_reasons)
         await self.manager.broadcast_json(
             {
                 "type": "SIGNAL",
@@ -879,6 +901,34 @@ class TradingEngine:
     def _volatility_ratio(snapshot: Any) -> float:
         baseline = max(float(getattr(snapshot, "avg_body", 0.0)), 0.01)
         return round(float(getattr(snapshot, "atr", 0.0)) / baseline, 4)
+
+    async def _publish_engine_status(
+        self,
+        *,
+        publish: bool,
+        phase: str,
+        message: str,
+        detail: str | None = None,
+        symbol: str | None = None,
+        trading_style: str | None = None,
+        progress: int | float | None = None,
+        current_gate: str | None = None,
+        candidate_count: int | None = None,
+        rejected_count: int | None = None,
+    ) -> None:
+        status = runtime_state.set_engine_status(
+            phase=phase,
+            message=message,
+            detail=detail,
+            symbol=symbol,
+            trading_style=trading_style,
+            progress=progress,
+            current_gate=current_gate,
+            candidate_count=candidate_count,
+            rejected_count=rejected_count,
+        )
+        if publish:
+            await self.publisher.manager.broadcast_json({"type": "ENGINE_STATUS", "data": status})
 
     @staticmethod
     def _apply_hold_reason(batch: AnalysisBatch, *, reason_code: str, message: str) -> None:
@@ -1157,6 +1207,20 @@ class TradingEngine:
         publish: bool = True,
         transition_penalty_active: bool = False,
     ) -> AnalysisBatchResponse:
+        raw_style = trading_style or runtime_state.get_trading_style() or "Scalper"
+        status_style = raw_style.capitalize() if raw_style.lower() in ("scalper", "intraday", "swing") else raw_style
+        if status_style not in {"Scalper", "Intraday", "Swing"}:
+            status_style = "Scalper"
+        status_symbol = symbol or runtime_state.get_target_symbol() or "XAUUSD"
+        await self._publish_engine_status(
+            publish=publish,
+            phase="cycle-started",
+            message="Analysis cycle started.",
+            detail="Collecting live tick, candle, indicator, pattern, and risk context.",
+            symbol=status_symbol,
+            trading_style=status_style,
+            progress=5,
+        )
         context = await self.market_data.build_context(
             trading_style=trading_style,
             symbol=symbol,
@@ -1164,15 +1228,49 @@ class TradingEngine:
             news_blocked=news_blocked,
             risk_blocked=risk_blocked,
         )
+        await self._publish_engine_status(
+            publish=publish,
+            phase="market-data-fetched",
+            message="Market data fetched.",
+            detail=(
+                f"Loaded {len(context.datasets)} timeframe dataset(s); "
+                f"price source is {context.current_price_source}."
+            ),
+            symbol=context.symbol,
+            trading_style=context.trading_style,
+            progress=30,
+        )
+        detected_pattern_count = sum(len(patterns) for patterns in context.patterns_by_timeframe.values())
+        await self._publish_engine_status(
+            publish=publish,
+            phase="patterns-calculated",
+            message="Indicators and patterns calculated.",
+            detail=f"Detected {detected_pattern_count} pattern candidate(s) across configured timeframes.",
+            symbol=context.symbol,
+            trading_style=context.trading_style,
+            progress=45,
+        )
         context.transition_penalty_active = transition_penalty_active
         base_auto_execute_confidence = float(
-            os.getenv("AUTO_EXECUTE_MIN_CONFIDENCE", str(context.config["auto_execute_confidence"]))
+            context.effective_auto_execute_confidence
+            or os.getenv("AUTO_EXECUTE_MIN_CONFIDENCE", str(context.config["auto_execute_confidence"]))
         )
         primary_tf = context.config["timeframes"][0]
         setup_book = RankedSetupBook()
         raw_setup_book = RankedSetupBook()
         if primary_tf not in context.datasets:
             batch = self.ranking.build_no_data_batch(context)
+            await self._publish_engine_status(
+                publish=publish,
+                phase="candidates-ranked",
+                message="No usable primary data for ranking.",
+                detail="The engine built a transparent HOLD response because the primary timeframe was unavailable.",
+                symbol=context.symbol,
+                trading_style=context.trading_style,
+                progress=65,
+                candidate_count=0,
+                rejected_count=0,
+            )
         else:
             primary_snapshot = context.snapshots[primary_tf]
             context.regime_hierarchy = get_regime_hierarchy(primary_snapshot.regime, primary_snapshot)
@@ -1210,6 +1308,20 @@ class TradingEngine:
                 setup_book = filter_signals_by_data_quality(setup_book, context.data_quality)
                 if context.data_quality.signals_blocked or context.data_quality.hard_block:
                     log_data_quality_event(context.data_quality)
+            await self._publish_engine_status(
+                publish=publish,
+                phase="candidates-ranked",
+                message="Candidate setups ranked.",
+                detail=(
+                    f"{len(setup_book.selected)} executable candidate(s), "
+                    f"{len(setup_book.rejected)} rejected idea(s)."
+                ),
+                symbol=context.symbol,
+                trading_style=context.trading_style,
+                progress=65,
+                candidate_count=len(setup_book.selected),
+                rejected_count=len(setup_book.rejected),
+            )
 
             batch_id = str(uuid4())
             self._log_shadow_candidates(batch_id=batch_id, context=context, setup_book=setup_book)
@@ -1256,8 +1368,45 @@ class TradingEngine:
             setup_book=setup_book,
             context_summary=summary,
         )
+        blocking_gates = [
+            gate.label
+            for gate in batch.engine_insight.decision_gates
+            if gate.blocking and not gate.passed
+        ] if batch.engine_insight else []
+        await self._publish_engine_status(
+            publish=publish,
+            phase="gates-evaluated",
+            message="Decision gates evaluated.",
+            detail=(
+                "All blocking gates are clear."
+                if not blocking_gates
+                else f"Blocking gate(s): {', '.join(blocking_gates)}."
+            ),
+            symbol=context.symbol,
+            trading_style=context.trading_style,
+            progress=85,
+            current_gate=blocking_gates[0] if blocking_gates else "clear",
+            candidate_count=len(setup_book.selected),
+            rejected_count=len(setup_book.rejected),
+        )
 
         if publish:
             batch = await self.publisher.persist_and_broadcast(batch, context)
+        final_reason = batch.primary.reasoning
+        if batch.primary.direction == "HOLD" and batch.primary.no_trade_reasons:
+            first_reason = batch.primary.no_trade_reasons[0]
+            if isinstance(first_reason, dict) and first_reason.get("message"):
+                final_reason = str(first_reason["message"])
+        await self._publish_engine_status(
+            publish=publish,
+            phase="analysis-complete",
+            message=f"Analysis complete: {batch.primary.direction}.",
+            detail=final_reason,
+            symbol=context.symbol,
+            trading_style=context.trading_style,
+            progress=100,
+            candidate_count=len(setup_book.selected),
+            rejected_count=len(setup_book.rejected),
+        )
 
         return AnalysisBatchResponse(status="ok", data=batch, context=summary)

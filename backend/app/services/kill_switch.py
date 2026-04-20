@@ -33,9 +33,14 @@ class KillSwitch:
         import os
         db_settings = db.get_settings(account_id) if db and db.is_enabled() else {}
         
+        enable_kill_switch = db_settings.get(
+            "enable_kill_switch",
+            os.getenv("ENABLE_KILL_SWITCH", "true"),
+        )
+
         return {
-            "enabled": db_settings.get("enable_kill_switch", os.getenv("ENABLE_KILL_SWITCH", "true")).lower() not in ("0", "false", "no", "off"),
-            "max_data_age": float(db_settings.get("max_data_age_seconds", "900")),
+            "enabled": str(enable_kill_switch).lower() not in ("0", "false", "no", "off"),
+            "max_data_age": float(db_settings.get("max_data_age_seconds", "300")),
             "max_drawdown": float(db_settings.get("max_drawdown_percent", "15")),
             "max_consecutive_losses": int(db_settings.get("max_consecutive_losses", "5")),
             "min_regime_stability": float(db_settings.get("min_regime_stability", "0.5")),
