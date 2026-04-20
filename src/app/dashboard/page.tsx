@@ -28,6 +28,7 @@ import EconomicCalendar from "@/components/data/EconomicCalendar";
 
 import EngineInsightPanel from "@/components/signals/EngineInsightPanel";
 import MarketStatePanel from "@/components/signals/MarketStatePanel";
+import type { EngineStatus } from "@/lib/types";
 
 const TradingViewChart = dynamic(
   () => import("@/components/chart/TradingViewChart"),
@@ -55,6 +56,7 @@ type AnalysisEngineCardProps = {
   isStale: boolean;
   configApiKey?: string;
   latestRegimeSummary?: string | null;
+  engineStatus: EngineStatus | null;
 };
 
 function AnalysisEngineCard({
@@ -73,7 +75,10 @@ function AnalysisEngineCard({
   isStale,
   configApiKey,
   latestRegimeSummary,
+  engineStatus,
 }: AnalysisEngineCardProps) {
+  const engineProgress = typeof engineStatus?.progress === "number" ? Math.round(engineStatus.progress) : null;
+
   return (
     <div className="bg-[#131722] rounded-lg border border-white/5 p-3">
       <div className="flex items-center justify-between mb-2">
@@ -94,10 +99,38 @@ function AnalysisEngineCard({
         )}
         {isConnected && (
           <div className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/40">
-            Next TCK in <span className="text-white font-bold">{nextAnalysis}s</span>
+            {engineProgress != null ? (
+              <>Calc <span className="text-white font-bold">{engineProgress}%</span></>
+            ) : (
+              <>Next TCK in <span className="text-white font-bold">{nextAnalysis}s</span></>
+            )}
           </div>
         )}
       </div>
+      {engineStatus && (
+        <div className="mt-2 rounded-md border border-gold/10 bg-gold/5 p-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-gold">
+              {engineStatus.phase.replaceAll("-", " ")}
+            </p>
+            <span className="text-[9px] font-(family-name:--font-jetbrains-mono) text-white/35">
+              {new Date(engineStatus.updated_at).toLocaleTimeString()}
+            </span>
+          </div>
+          <p className="mt-1 text-[10px] leading-relaxed text-white/55">{engineStatus.message}</p>
+          {engineStatus.detail && (
+            <p className="mt-1 text-[10px] leading-relaxed text-white/35">{engineStatus.detail}</p>
+          )}
+          {typeof engineStatus.progress === "number" && (
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/5">
+              <div
+                className="h-full rounded-full bg-gold transition-all duration-300"
+                style={{ width: `${Math.min(100, Math.max(0, engineStatus.progress))}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {lastAnalysis && (
         <div className="mt-2 text-[9px] font-(family-name:--font-jetbrains-mono) text-white/30 text-right">
           Last execution: {lastAnalysis.toLocaleTimeString()}
@@ -252,7 +285,19 @@ export default function DashboardPage() {
   useSocket();
   useSignalPolling();
   useSignalTracker();
-  const { activeSignal, latestBatch, marketState, signalHistory, isConnected, clearActiveSignal, targetSymbol, setTargetSymbol } = useMidasStore();
+  const {
+    activeSignal,
+    latestBatch,
+    marketState,
+    engineStatus,
+    engineLog,
+    executionLog,
+    signalHistory,
+    isConnected,
+    clearActiveSignal,
+    targetSymbol,
+    setTargetSymbol,
+  } = useMidasStore();
   
   // Track when signals arrive (automatic analysis indicator)
   useEffect(() => {
@@ -296,9 +341,10 @@ export default function DashboardPage() {
   }, []);
 
   const handleStyleChange = useCallback(async (style: TradingStyle) => {
-    if (style === tradingStyle) return;
+    if (styleChanging) return;
     setStyleChanging(true);
     setTradingStyle(style);
+    setNextAnalysis(10);
     clearActiveSignal();
     // Clear history that doesn't match the new style
     useMidasStore.setState((s) => ({
@@ -336,9 +382,10 @@ export default function DashboardPage() {
       });
     } catch {
       // Backend may not be reachable — signals will come from next loop cycle
+    } finally {
+      setStyleChanging(false);
     }
-    setStyleChanging(false);
-  }, [tradingStyle, clearActiveSignal, setTradingStyle]);
+  }, [styleChanging, clearActiveSignal, setTradingStyle]);
 
   const { candles: candleData, loading: candlesLoading } = useLiveCandles(timeframe);
   const { events: calendarEvents, loading: calendarLoading } = useCalendar();
@@ -809,6 +856,7 @@ export default function DashboardPage() {
                 isSymbolMatch={isSymbolMatch}
                 isStale={isStale}
                 configApiKey={config.apiKey}
+                engineStatus={engineStatus}
                 latestRegimeSummary={
                   latestBatch && latestBatch.trading_style.toLowerCase() === tradingStyle.toLowerCase()
                     ? latestBatch.regime_summary
@@ -1043,6 +1091,36 @@ export default function DashboardPage() {
             <div className="flex-1 overflow-y-auto p-2 hide-scrollbar">
               {bottomTab === "terminal" && (
                 <div className="space-y-1 font-(family-name:--font-jetbrains-mono) text-[10px]">
+                  {engineLog.slice(0, 8).map((status, idx) => (
+                    <div key={`${status.updated_at}-${status.phase}-${idx}`} className="flex items-center gap-3 rounded p-1 text-white/55">
+                      <span className="text-white/20 whitespace-nowrap hidden sm:inline">
+                        {new Date(status.updated_at).toLocaleTimeString()}
+                      </span>
+                      <span className="font-bold w-12 shrink-0 text-gold">[CALC]</span>
+                      <span className="truncate flex-1 min-w-0">
+                        {status.phase.replaceAll("-", " ")} <span className="text-white/35">-</span> {status.message}
+                        {status.detail && <span className="text-white/35 ml-1">{status.detail}</span>}
+                      </span>
+                    </div>
+                  ))}
+                  {executionLog.slice(0, 6).map((ack, idx) => {
+                    const failed = ack.status === "error" || ack.status === "blocked";
+                    const label = failed ? "AUTO FAIL" : ack.status === "ok" ? "EXEC OK" : "AUTO";
+                    return (
+                      <div key={`${ack.updated_at}-${ack.signal_id}-${idx}`} className="flex items-center gap-3 rounded p-1 text-white/60">
+                        <span className="text-white/20 whitespace-nowrap hidden sm:inline">
+                          {ack.updated_at ? new Date(ack.updated_at).toLocaleTimeString() : "--:--:--"}
+                        </span>
+                        <span className={`font-bold w-12 shrink-0 ${failed ? "text-bearish" : "text-bullish"}`}>[{label}]</span>
+                        <span className="truncate flex-1 min-w-0">
+                          {failed ? "AUTO EXECUTION FAILED" : "Auto-execute"} <span className="text-white/35">-</span> {ack.message || ack.status}
+                          {ack.broker_symbol && ack.symbol && ack.broker_symbol !== ack.symbol && (
+                            <span className="text-white/35 ml-1">({ack.symbol} → {ack.broker_symbol})</span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                   {displayHistory.slice(0, 15).map((sig, idx) => (
                     <div key={`${sig.id || sig.timestamp || idx}-${sig.symbol}-${idx}`} className="flex items-center gap-3 hover:bg-white/5 p-1 rounded transition-colors group">
                       <span className="text-white/20 whitespace-nowrap hidden sm:inline">
@@ -1056,7 +1134,7 @@ export default function DashboardPage() {
                       </span>
                     </div>
                   ))}
-                  {displayHistory.length === 0 && (
+                  {displayHistory.length === 0 && engineLog.length === 0 && (
                     <div className="text-white/20 p-2 italic flex items-center justify-center h-full min-h-32">Waiting for signal execution commands...</div>
                   )}
                 </div>
@@ -1147,6 +1225,7 @@ export default function DashboardPage() {
                 <EngineInsightPanel
                   batch={latestMatchingBatch}
                   marketState={marketState}
+                  engineStatus={engineStatus}
                   noSetupMessage={noSetupMessage}
                 />
               )}

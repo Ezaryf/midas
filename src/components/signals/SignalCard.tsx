@@ -148,6 +148,21 @@ Reasoning: ${signal.reasoning}`;
                     forced execution
                   </span>
                 )}
+                {signal.auto_execute_state === "attempted" && (
+                  <span className="text-[10px] text-bullish bg-bullish/10 px-1.5 py-0.5 rounded-md uppercase whitespace-nowrap">
+                    auto-execute attempted
+                  </span>
+                )}
+                {signal.auto_execute_state === "blocked" && (
+                  <span className="text-[10px] text-warning bg-warning/10 px-1.5 py-0.5 rounded-md uppercase whitespace-nowrap" title={signal.auto_execute_reason}>
+                    auto-execute blocked
+                  </span>
+                )}
+                {signal.broker_symbol && signal.symbol && signal.broker_symbol !== signal.symbol && (
+                  <span className="text-[10px] text-text-muted bg-surface px-1.5 py-0.5 rounded-md uppercase whitespace-nowrap">
+                    MT5 {signal.broker_symbol}
+                  </span>
+                )}
               </div>
               <p className="text-xs text-text-muted">
                 {formatRelativeTime(timestamp)}

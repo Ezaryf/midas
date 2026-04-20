@@ -65,7 +65,7 @@ export default function StatusBar() {
         <>
           <span className="text-border mx-1">—</span>
           <span className="text-text-muted whitespace-nowrap">
-            Run <code className="font-[family-name:var(--font-jetbrains-mono)] text-gold">python mt5_bridge.py</code> in <code className="font-[family-name:var(--font-jetbrains-mono)] text-gold">backend/</code>
+            Run <code className="font-[family-name:var(--font-jetbrains-mono)] text-gold">python mt5_bridge.py --auto-trade</code> in <code className="font-[family-name:var(--font-jetbrains-mono)] text-gold">backend/</code>
           </span>
         </>
       )}

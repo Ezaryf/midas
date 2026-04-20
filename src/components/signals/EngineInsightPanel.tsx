@@ -13,12 +13,13 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
-import type { AnalysisBatch, CandidateInsight, MarketState } from "@/lib/types";
+import type { AnalysisBatch, CandidateInsight, EngineStatus, MarketState } from "@/lib/types";
 import { formatPrice } from "@/lib/utils";
 
 interface EngineInsightPanelProps {
   batch: AnalysisBatch | null;
   marketState: MarketState | null;
+  engineStatus: EngineStatus | null;
   noSetupMessage: string;
 }
 
@@ -39,6 +40,7 @@ function formatPercent(value?: number) {
 export default function EngineInsightPanel({
   batch,
   marketState,
+  engineStatus,
   noSetupMessage,
 }: EngineInsightPanelProps) {
   if (!batch?.engine_insight) {
@@ -50,8 +52,23 @@ export default function EngineInsightPanel({
           <span className="h-1.5 w-1.5 rounded-full bg-gold animate-pulse" /> Engine Desk Validating
         </p>
         <p className="mt-1.5 text-[10px] leading-relaxed text-white/20 relative z-10">
-          Actively calculating mathematical tick streams.
+          {engineStatus?.detail || engineStatus?.message || "Actively calculating mathematical tick streams."}
         </p>
+        {engineStatus && (
+          <div className="mt-3 rounded border border-white/5 bg-black/20 p-2 text-left relative z-10">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[8px] font-bold uppercase tracking-widest text-white/30">
+                {engineStatus.phase.replaceAll("-", " ")}
+              </p>
+              {typeof engineStatus.progress === "number" && (
+                <span className="text-[9px] font-[family-name:var(--font-jetbrains-mono)] text-gold">
+                  {Math.round(engineStatus.progress)}%
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-white/55">{engineStatus.message}</p>
+          </div>
+        )}
         
         {marketState && (
           <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-2 text-left relative z-10">
