@@ -1,9 +1,13 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import asyncio
 import json
 import logging
+import os
+import time
 from collections import deque
 
 from app.services.runtime_state import runtime_state
+from app.services.symbols import symbols_match
 from app.services.trading_state import trading_state
 
 logger = logging.getLogger(__name__)
@@ -12,16 +16,60 @@ logging.basicConfig(level=logging.INFO)
 router = APIRouter()
 
 
+def sanitize_json_payload(obj):
+    import math
+
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: sanitize_json_payload(v) for k, v in obj.items()}
+    if isinstance(obj, list) or isinstance(obj, tuple):
+        return [sanitize_json_payload(v) for v in obj]
+    return obj
+
+
 class FrontendConnectionManager:
     """Manages browser frontend WebSocket connections (read-only)."""
 
     def __init__(self):
         self.active_connections: list[WebSocket] = []
+        self.latest_tick: dict | None = None
+        self.latest_market_state: dict | None = None
+        self.latest_signal_batch: dict | None = None
+        self.latest_signal: dict | None = None
+        self.latest_execution_ack: dict | None = None
+        self.latest_engine_status: dict | None = None
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"Frontend connected. Total: {len(self.active_connections)}")
+
+        latest_tick = self.latest_tick or runtime_state.get_tick()
+        replay_payloads: list[dict] = []
+        if latest_tick:
+            self.latest_tick = latest_tick
+            replay_payloads.append({"type": "TICK", "data": latest_tick})
+        if self.latest_market_state:
+            replay_payloads.append({"type": "MARKET_STATE", "data": self.latest_market_state})
+        if self.latest_signal_batch:
+            replay_payloads.append({"type": "SIGNAL_BATCH", "data": self.latest_signal_batch})
+        if self.latest_signal:
+            replay_payloads.append({"type": "SIGNAL", "data": self.latest_signal})
+        if self.latest_execution_ack:
+            replay_payloads.append({"type": "EXECUTION_ACK", "data": self.latest_execution_ack})
+        latest_engine_status = self.latest_engine_status or runtime_state.get_engine_status()
+        if latest_engine_status:
+            self.latest_engine_status = latest_engine_status
+            replay_payloads.append({"type": "ENGINE_STATUS", "data": latest_engine_status})
+
+        for payload in replay_payloads:
+            try:
+                await asyncio.wait_for(websocket.send_json(sanitize_json_payload(payload)), timeout=0.5)
+            except Exception:
+                pass
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -30,12 +78,40 @@ class FrontendConnectionManager:
 
     async def broadcast_json(self, data: dict):
         """Broadcast data to all frontend connections."""
+        sanitized_data = sanitize_json_payload(data)
+        msg_type = sanitized_data.get("type")
+        if msg_type == "TICK":
+            tick_data = sanitized_data.get("data")
+            if isinstance(tick_data, dict):
+                self.latest_tick = tick_data
+        elif msg_type == "MARKET_STATE":
+            market_state = sanitized_data.get("data")
+            if isinstance(market_state, dict):
+                self.latest_market_state = market_state
+        elif msg_type == "SIGNAL_BATCH":
+            signal_batch = sanitized_data.get("data")
+            if isinstance(signal_batch, dict):
+                self.latest_signal_batch = signal_batch
+        elif msg_type == "SIGNAL":
+            signal = sanitized_data.get("data")
+            if isinstance(signal, dict):
+                self.latest_signal = signal
+        elif msg_type == "EXECUTION_ACK":
+            ack = sanitized_data.get("data")
+            if isinstance(ack, dict):
+                self.latest_execution_ack = ack
+        elif msg_type == "ENGINE_STATUS":
+            engine_status = sanitized_data.get("data")
+            if isinstance(engine_status, dict):
+                self.latest_engine_status = engine_status
+                runtime_state.set_engine_status(**engine_status)
+
         if not self.active_connections:
             return
         dead = []
         for conn in self.active_connections:
             try:
-                await conn.send_json(data)
+                await asyncio.wait_for(conn.send_json(sanitized_data), timeout=0.5)
             except Exception:
                 dead.append(conn)
         for conn in dead:
@@ -48,6 +124,7 @@ frontend_manager = FrontendConnectionManager()
 class MT5ConnectionManager:
     _SIGNAL_ACKS_MAX_SIZE = 100
     _SIGNAL_ACKS_TTL_SECONDS = 300
+    _PENDING_SIGNAL_TTL_SECONDS = float(os.getenv("PENDING_SIGNAL_TTL_SECONDS", "15"))
 
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -86,12 +163,20 @@ class MT5ConnectionManager:
 
         # Replay any pending signals to the newly connected bridge
         if self._pending_signals:
-            logger.info(f"Replaying {len(self._pending_signals)} pending signal(s) to new connection.")
-            # Copy deque before iterating to avoid "deque mutated during iteration" error
-            pending = list(self._pending_signals)
+            now = time.time()
+            pending = [
+                signal for signal in list(self._pending_signals)
+                if now - float(signal.get("queued_at", 0.0) or 0.0) <= self._PENDING_SIGNAL_TTL_SECONDS
+            ]
+            dropped = len(self._pending_signals) - len(pending)
+            if dropped:
+                logger.warning(f"Dropped {dropped} stale pending signal(s) before bridge replay.")
+            logger.info(f"Replaying {len(pending)} pending signal(s) to new connection.")
             for signal in pending:
                 try:
-                    await websocket.send_json(signal)
+                    payload = dict(signal)
+                    payload.pop("queued_at", None)
+                    await asyncio.wait_for(websocket.send_json(payload), timeout=0.5)
                 except Exception:
                     pass
             self._pending_signals.clear()
@@ -103,39 +188,28 @@ class MT5ConnectionManager:
 
     async def broadcast_json(self, data: dict):
         """Sends a JSON payload to all active connections."""
-        import math
-        def sanitize_json_payload(obj):
-            if isinstance(obj, float):
-                if math.isnan(obj) or math.isinf(obj):
-                    return None
-                return obj
-            elif isinstance(obj, dict):
-                return {k: sanitize_json_payload(v) for k, v in obj.items()}
-            elif isinstance(obj, list) or isinstance(obj, tuple):
-                return [sanitize_json_payload(v) for v in obj]
-            return obj
-
         sanitized_data = sanitize_json_payload(data)
 
-        # Always broadcast to frontend (read-only) - even without bridge!
-        if frontend_manager.active_connections:
-            try:
-                await frontend_manager.broadcast_json(sanitized_data)
-            except Exception:
-                pass  # Frontend disconnected, skip
+        # Always update/broadcast the frontend cache so reconnects replay the newest state.
+        try:
+            await frontend_manager.broadcast_json(sanitized_data)
+        except Exception:
+            pass  # Frontend disconnected, skip
 
         # Bridge-specific messages only when bridge is connected
         if not self.active_connections:
             # No bridge connected — queue the signal for when it reconnects
             if sanitized_data.get("type") == "SIGNAL":
-                self._pending_signals.append(sanitized_data)
+                queued_signal = dict(sanitized_data)
+                queued_signal["queued_at"] = time.time()
+                self._pending_signals.append(queued_signal)
                 logger.warning("No bridge connected — signal queued for next connection.")
             return
 
         dead = []
         for conn in self.active_connections:
             try:
-                await conn.send_json(sanitized_data)
+                await asyncio.wait_for(conn.send_json(sanitized_data), timeout=0.5)
             except Exception as e:
                 # Connection closed or sending on closed WebSocket
                 logger.warning(f"Failed to send to client, marking dead: {e}")
@@ -164,14 +238,14 @@ class MT5ConnectionManager:
             # Price update from MT5
             tick_data = data.get("data", {})
             symbol = tick_data.get("symbol")
-            if symbol and symbol != runtime_state.get_target_symbol():
+            if symbol and not symbols_match(symbol, runtime_state.get_target_symbol()):
                 runtime_state.set_target_symbol(symbol)
                 trading_state.set_target_symbol(symbol)
                 logger.info(f"Target symbol synced to: {symbol}")
 
-            self.latest_tick = tick_data
-            runtime_state.set_tick(self.latest_tick)
-            await self.broadcast_json({"type": "TICK", "data": self.latest_tick})
+            runtime_state.set_tick(tick_data)
+            self.latest_tick = runtime_state.get_tick()
+            await frontend_manager.broadcast_json({"type": "TICK", "data": self.latest_tick})
 
         elif msg_type == "CANDLES":
             candle_data = data.get("data", {})
@@ -179,7 +253,7 @@ class MT5ConnectionManager:
             timeframe = candle_data.get("timeframe")
             candles = candle_data.get("candles", [])
             if symbol and timeframe and candles:
-                if symbol != runtime_state.get_target_symbol():
+                if not symbols_match(symbol, runtime_state.get_target_symbol()):
                     runtime_state.set_target_symbol(symbol)
                     trading_state.set_target_symbol(symbol)
                     logger.info(f"Target symbol synced from candle stream to: {symbol}")
@@ -195,6 +269,7 @@ class MT5ConnectionManager:
             signal_id = data.get("signal_id")
             if signal_id:
                 self.store_ack(signal_id, data)
+                await frontend_manager.broadcast_json({"type": "EXECUTION_ACK", "data": data})
         
         elif msg_type == "PONG":
             # Heartbeat response

@@ -14,6 +14,7 @@ from app.api.ws.mt5_handler import router as mt5_router, frontend_router
 from app.api.routes import router as api_router
 from app.core.loop import background_trading_loop
 import asyncio
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,15 +43,23 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("AllTick gold stream disabled")
 
-    # Start background trading loop on startup
-    loop_task = asyncio.create_task(background_trading_loop())
+    stop_event = threading.Event()
+
+    def _run_trading_loop():
+        if stop_event.is_set():
+            return
+        try:
+            asyncio.run(background_trading_loop())
+        except Exception:
+            logger.exception("Background trading loop crashed.")
+
+    # Keep analysis off FastAPI's event loop so long indicator/AI/DB work cannot
+    # freeze health checks, websocket replay, or live tick handling.
+    loop_thread = threading.Thread(target=_run_trading_loop, daemon=True)
+    loop_thread.start()
     logger.info("Background trading loop started.")
     yield
-    loop_task.cancel()
-    try:
-        await loop_task
-    except asyncio.CancelledError:
-        pass
+    stop_event.set()
     logger.info("Background trading loop stopped.")
 
 

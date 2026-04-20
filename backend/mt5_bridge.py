@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -57,6 +58,7 @@ TICK_INTERVAL = float(os.getenv("TICK_INTERVAL", "0.1"))
 DEFAULT_LOT   = float(os.getenv("DEFAULT_LOT", "0.01"))
 MAGIC_NUMBER  = 20250101
 CANDLE_PUSH_INTERVAL = float(os.getenv("CANDLE_PUSH_INTERVAL", "5.0"))
+ENABLE_CANDLE_STREAM = os.getenv("ENABLE_CANDLE_STREAM", "false").lower() in {"1", "true", "yes", "on"}
 CANDLE_TIMEFRAMES = {
     "1m": mt5.TIMEFRAME_M1,
     "5m": mt5.TIMEFRAME_M5,
@@ -64,7 +66,7 @@ CANDLE_TIMEFRAMES = {
     "1h": mt5.TIMEFRAME_H1,
     "4h": mt5.TIMEFRAME_H4,
 }
-CANDLE_BARS = int(os.getenv("CANDLE_BARS", "300"))
+CANDLE_BARS = int(os.getenv("CANDLE_BARS", "60"))
 
 
 # ── MT5 Initialisation ────────────────────────────────────────────────────────
@@ -150,9 +152,57 @@ def init_mt5() -> bool:
 
 # ── Order Execution ───────────────────────────────────────────────────────────
 
+_GOLD_PATTERNS = (
+    re.compile(r"^GOLD$", re.IGNORECASE),
+    re.compile(r"^XAUUSD[A-Z]?$", re.IGNORECASE),
+    re.compile(r"^GOLDUSD$", re.IGNORECASE),
+    re.compile(r"^GC[A-Z0-9]+$", re.IGNORECASE),
+)
+
+
+def _normalize_order_symbol(symbol: str | None) -> str:
+    cleaned = re.sub(r"[^A-Z0-9]", "", (symbol or "").upper())
+    for pattern in _GOLD_PATTERNS:
+        if pattern.match(cleaned):
+            return "XAUUSD"
+    return cleaned
+
+
+def _symbols_equivalent(left: str | None, right: str | None) -> bool:
+    left_normalized = _normalize_order_symbol(left)
+    right_normalized = _normalize_order_symbol(right)
+    return bool(left_normalized and right_normalized and left_normalized == right_normalized)
+
+
+def _mt5_symbol_exists(symbol: str | None) -> bool:
+    if not symbol:
+        return False
+    try:
+        mt5.symbol_select(symbol, True)
+        return mt5.symbol_info(symbol) is not None
+    except Exception:
+        return False
+
+
+def _resolve_order_symbol(signal: dict) -> str:
+    display_symbol = signal.get("symbol")
+    for candidate in (
+        signal.get("broker_symbol"),
+        signal.get("execution_symbol"),
+        SYMBOL if _symbols_equivalent(display_symbol, SYMBOL) else None,
+        display_symbol,
+        SYMBOL,
+    ):
+        if _mt5_symbol_exists(candidate):
+            return candidate
+    return signal.get("broker_symbol") or signal.get("execution_symbol") or SYMBOL or display_symbol
+
 def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
     direction = signal.get("direction", "").upper()
-    trade_symbol = signal.get("symbol") or SYMBOL
+    display_symbol = signal.get("symbol") or SYMBOL
+    trade_symbol = _resolve_order_symbol(signal)
+    if display_symbol != trade_symbol:
+        logger.info(f"Execution symbol resolved: display={display_symbol} broker={trade_symbol}")
     
     # Safely convert to float, handling None values
     try:
@@ -277,6 +327,9 @@ def place_order(signal: dict, max_retries: int = 3, risk_manager=None) -> dict:
                     "lot_size": lot,
                     "spread": spread,
                     "slippage_points": slippage_points,
+                    "symbol": display_symbol,
+                    "broker_symbol": trade_symbol,
+                    "execution_symbol": trade_symbol,
                 }
 
             # Unsupported filling — try next
@@ -383,7 +436,10 @@ def close_positions_for_symbol(symbol: str, *, close_reason: str, db=None) -> di
     target_symbol = symbol or SYMBOL
     positions = mt5.positions_get(magic=MAGIC_NUMBER) or []
     matching_positions = [
-        pos for pos in positions if target_symbol.upper() in str(getattr(pos, "symbol", "")).upper()
+        pos
+        for pos in positions
+        if _symbols_equivalent(target_symbol, str(getattr(pos, "symbol", "")))
+        or target_symbol.upper() in str(getattr(pos, "symbol", "")).upper()
     ]
 
     if not matching_positions:
@@ -550,44 +606,62 @@ class TradeSynchronizer:
 
 # ── WebSocket Client ──────────────────────────────────────────────────────────
 
-async def run(auto_trade: bool = False):
-    logger.info(f"Connecting to Midas backend at {WS_URL}...")
-    logger.info(f"Auto-trade: {'ENABLED ⚡' if auto_trade else 'DISABLED (display only)'}")
+def _load_execution_services():
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        from app.services.database import db
+        from app.services.risk_manager import get_risk_manager
+        return db, get_risk_manager()
+    except Exception as e:
+        logger.warning(f"Execution services unavailable in bridge: {e}")
+        return None, None
 
-    # Start synchronizer and position monitor
+
+def _start_optional_bridge_services_sync(auto_trade: bool):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
     position_monitor = None
     synchronizer = None
-    
+
     try:
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent))
         from app.services.database import db
         from app.services.position_monitor import get_position_monitor
-        
+
         if db and db.is_enabled():
             synchronizer = TradeSynchronizer(db, SYMBOL, MAGIC_NUMBER)
             logger.info("📡 Trade Synchronizer created.")
-            
-            # Log current Risk limits to verify sync
-            from app.services.risk_manager import get_risk_manager
-            rm = get_risk_manager()
-            if rm:
-                logger.info(f"🛡️  Active Risk Limits: Concurrent={rm.config.max_concurrent_positions}, Daily Trades={rm.config.max_daily_trades}, Lot={rm.config.min_lot_size}-{rm.config.max_lot_size}, Loss=${rm.config.daily_loss_limit}")
-
-            # Run one initial sync before entering loop
-            synchronizer.sync_all()
-            logger.info("✅ Initial MT5 history sync complete.")
 
         if auto_trade:
             position_monitor = get_position_monitor()
             if position_monitor:
                 position_monitor.start()
     except Exception as e:
-        logger.error(f"Failed to start bridge services: {e}")
+        logger.error(f"Failed to start optional bridge services: {e}")
+
+    return synchronizer, position_monitor
+
+
+async def _start_optional_bridge_services(auto_trade: bool):
+    synchronizer, _position_monitor = _start_optional_bridge_services_sync(auto_trade)
+    if synchronizer:
+        asyncio.create_task(synchronizer.sync_loop(30))
+
+
+async def _send_json(ws, payload: dict, send_lock: asyncio.Lock, *, timeout: float = 2.0) -> None:
+    async with send_lock:
+        await asyncio.wait_for(ws.send(json.dumps(payload)), timeout=timeout)
+
+
+async def run(auto_trade: bool = False):
+    logger.info(f"Connecting to Midas backend at {WS_URL}...")
+    logger.info(f"Auto-trade: {'ENABLED ⚡' if auto_trade else 'DISABLED (display only)'}")
 
     async for ws in websockets.connect(WS_URL, ping_interval=20, ping_timeout=10):
         try:
             logger.info("✅ Connected to Midas backend. Streaming ticks...")
+            asyncio.create_task(_start_optional_bridge_services(auto_trade))
+            send_lock = asyncio.Lock()
             
             async def mt5_health_check():
                 while True:
@@ -602,16 +676,25 @@ async def run(auto_trade: bool = False):
                         break
             
             tasks = [
-                tick_sender(ws),
-                candle_sender(ws),
-                command_receiver(ws, auto_trade),
-                order_executor_worker(ws, auto_trade),
-                mt5_health_check(),
+                asyncio.create_task(tick_sender(ws, send_lock)),
+                asyncio.create_task(command_receiver(ws, auto_trade, send_lock)),
+                asyncio.create_task(order_executor_worker(ws, auto_trade, send_lock)),
+                asyncio.create_task(mt5_health_check()),
             ]
-            if synchronizer:
-                tasks.append(synchronizer.sync_loop(30))
-                
-            await asyncio.gather(*tasks)
+            if ENABLE_CANDLE_STREAM:
+                tasks.append(asyncio.create_task(candle_sender(ws, send_lock)))
+            else:
+                logger.info("Candle stream disabled; keeping MT5 tick/execution bridge responsive.")
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                exc = task.exception()
+                if exc:
+                    raise exc
+            logger.warning("Bridge task ended — reconnecting in 5s...")
+            await asyncio.sleep(5)
         except websockets.ConnectionClosed:
             logger.warning("Connection closed — reconnecting in 5s...")
             await asyncio.sleep(5)
@@ -619,13 +702,12 @@ async def run(auto_trade: bool = False):
             logger.error(f"Error: {e} — reconnecting in 5s...")
             await asyncio.sleep(5)
         finally:
-            # Stop position monitor on disconnect
-            if position_monitor and position_monitor.running:
-                await position_monitor.stop()
+            pass
 
 
-async def tick_sender(ws):
+async def tick_sender(ws, send_lock: asyncio.Lock):
     last_price = None
+    last_no_tick_warning = 0.0
     while True:
         tick = mt5.symbol_info_tick(SYMBOL)
         if tick and tick.bid > 0 and tick.ask > 0:
@@ -649,38 +731,41 @@ async def tick_sender(ws):
                         "received_at": datetime.now(timezone.utc).isoformat(),
                     },
                 }
-                await ws.send(json.dumps(payload))
-            await asyncio.sleep(TICK_INTERVAL)
+                await _send_json(ws, payload, send_lock, timeout=1.0)
+        else:
+            now = asyncio.get_running_loop().time()
+            if now - last_no_tick_warning >= 10:
+                logger.warning(f"No valid MT5 tick for {SYMBOL}; waiting for next tick...")
+                last_no_tick_warning = now
+        await asyncio.sleep(TICK_INTERVAL)
 
 
 execution_queue = asyncio.Queue()
 
 
-async def order_executor_worker(ws, auto_trade: bool):
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent))
-    try:
-        from app.services.database import db
-        from app.services.risk_manager import get_risk_manager
-        from app.services.trading_state import trading_state
-        risk_manager = get_risk_manager()
-    except ImportError:
-        logger.warning("Database service not available in bridge")
-        db = None
-        risk_manager = None
+async def order_executor_worker(ws, auto_trade: bool, send_lock: asyncio.Lock):
+    db = None
+    risk_manager = None
+    services_task = asyncio.create_task(asyncio.to_thread(_load_execution_services))
 
     while True:
         task = await execution_queue.get()
+        if services_task.done() and db is None and risk_manager is None:
+            db, risk_manager = services_task.result()
         data = task["data"]
         action = task["action"]
         
         signal_id = data.get("signal_id", "unknown")
         direction = str(data.get("direction", "HOLD")).upper()
-        effective_symbol = data.get("symbol") or SYMBOL
+        display_symbol = data.get("symbol") or SYMBOL
+        effective_symbol = _resolve_order_symbol(data)
         position_action = str(data.get("position_action") or "open").lower()
         is_duplicate = bool(data.get("is_duplicate"))
         
-        logger.info(f"⚡ Processing queued execution [{signal_id}]: {direction} ({position_action})")
+        if display_symbol != effective_symbol:
+            logger.info(f"⚡ Processing queued execution [{signal_id}]: {direction} ({position_action}) display={display_symbol} broker={effective_symbol}")
+        else:
+            logger.info(f"⚡ Processing queued execution [{signal_id}]: {direction} ({position_action})")
         
         if is_duplicate or position_action == "ignore":
             result = {
@@ -764,6 +849,9 @@ async def order_executor_worker(ws, auto_trade: bool):
                         "position_action_reason": data.get("position_action_reason"),
                         "calibrated_confidence": data.get("calibrated_confidence"),
                         "confidence_source": data.get("confidence_source"),
+                        "display_symbol": display_symbol,
+                        "broker_symbol": result.get("broker_symbol") or effective_symbol,
+                        "execution_symbol": result.get("execution_symbol") or effective_symbol,
                     }
                     db.save_order(
                         signal_id=signal_id,
@@ -775,7 +863,7 @@ async def order_executor_worker(ws, auto_trade: bool):
                         lot_size=result.get("lot_size", float(data.get("lot", DEFAULT_LOT))),
                         magic_number=MAGIC_NUMBER,
                         comment=f"Midas AI Signal [{position_action}]",
-                        symbol=effective_symbol,
+                        symbol=display_symbol,
                         analysis_batch_id=data.get("analysis_batch_id"),
                         setup_type=data.get("setup_type"),
                         signal_context=signal_context,
@@ -796,8 +884,11 @@ async def order_executor_worker(ws, auto_trade: bool):
             "ticket": result.get("ticket"),
             "price": result.get("price") or result.get("close_price"),
             "message": result.get("comment") or result.get("reason") or result.get("message", ""),
+            "symbol": display_symbol,
+            "broker_symbol": result.get("broker_symbol") or effective_symbol,
+            "execution_symbol": result.get("execution_symbol") or effective_symbol,
         }
-        await ws.send(json.dumps(ack))
+        await _send_json(ws, ack, send_lock, timeout=1.0)
 
         if result.get("status") == "ok":
             logger.info(f"   ✅ Order #{result.get('ticket')} placed @ {result.get('price')}")
@@ -819,7 +910,7 @@ async def order_executor_worker(ws, auto_trade: bool):
             logger.error(f"Failed to mark queue task done: {e}")
 
 
-async def command_receiver(ws, auto_trade: bool):
+async def command_receiver(ws, auto_trade: bool, send_lock: asyncio.Lock):
     async for raw in ws:
         try:
             payload = json.loads(raw)
@@ -877,27 +968,27 @@ async def command_receiver(ws, auto_trade: bool):
 
             if not auto_trade:
                 logger.warning("   Auto-trade is OFF - restart with --auto-trade to execute orders")
-                await ws.send(json.dumps({
-                    "type": "ACK",
-                    "signal_id": signal_id,
-                    "status": "skipped",
-                    "message": "Auto-trade is disabled",
-                }))
+                await _send_json(ws, {
+                        "type": "ACK",
+                        "signal_id": signal_id,
+                        "status": "skipped",
+                        "message": "Auto-trade is disabled",
+                    }, send_lock, timeout=1.0)
                 continue
             
             await execution_queue.put({"action": action, "data": data})
         except Exception as e:
             logger.error(f"Error processing command: {e}")
 
-async def candle_sender(ws):
-    await _push_all_candles(ws, "initial")
+async def candle_sender(ws, send_lock: asyncio.Lock):
+    await _push_all_candles(ws, "initial", send_lock)
 
     while True:
-        await _push_all_candles(ws, "periodic")
+        await _push_all_candles(ws, "periodic", send_lock)
         await asyncio.sleep(CANDLE_PUSH_INTERVAL)
 
 
-async def _push_all_candles(ws, trigger: str):
+async def _push_all_candles(ws, trigger: str, send_lock: asyncio.Lock):
     for tf_name in CANDLE_TIMEFRAMES.keys():
         candles = _fetch_candles(SYMBOL, tf_name)
         if candles:
@@ -910,7 +1001,12 @@ async def _push_all_candles(ws, trigger: str):
                     "candles": candles,
                 },
             }
-            await ws.send(json.dumps(payload))
+            try:
+                await _send_json(ws, payload, send_lock, timeout=1.5)
+            except asyncio.TimeoutError:
+                logger.warning(f"📊 [{trigger}] Candle send timed out: {SYMBOL} {tf_name}; continuing.")
+            logger.debug(f"📊 [{trigger}] Sent candles: {SYMBOL} {tf_name}")
+            await asyncio.sleep(0.05)
         else:
             logger.debug(f"⚠️ [{trigger}] No candles for {SYMBOL} {tf_name}")
 
