@@ -931,6 +931,8 @@ def _detect_supply_demand(snapshot: MarketSnapshot, secondary: Optional[MarketSn
     candidates: list[SetupCandidate] = []
     if snapshot.regime in {"transition"}:
         return candidates
+    if snapshot.regime == "range" and snapshot.efficiency_ratio < 0.25:
+        return candidates
     
     zone_tolerance = snapshot.atr * 1.5
     stop_buffer = snapshot.atr * style_cfg.get("stop_buffer_atr", 0.35)
@@ -1115,7 +1117,7 @@ def detect_ranked_setups(
                 continue
             
             # High-confidence fallback override
-            if candidate.score >= fallback_threshold:
+            if regime_hierarchy is not None and candidate.score >= fallback_threshold:
                 candidate.context_tags.append("regime_gating_override")
                 filtered_candidates.append(candidate)
                 continue

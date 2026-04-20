@@ -18,6 +18,12 @@ class RuntimeStateService:
         self._ai_provider: str = "openai"
         self._ai_api_key: str | None = None
         self._latest_candles: dict[tuple[str, str], dict[str, Any]] = {}
+        self._engine_status: dict[str, Any] | None = {
+            "phase": "booting",
+            "message": "Engine starting up.",
+            "detail": "Waiting for the first analysis cycle.",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     def set_tick(self, tick: dict[str, Any] | None) -> None:
         if tick is None:
@@ -28,23 +34,27 @@ class RuntimeStateService:
             return
 
         incoming_source = tick.get("source", "").upper()
+        local_received_at = datetime.now(timezone.utc)
+        normalized_tick = dict(tick)
+        if normalized_tick.get("received_at"):
+            normalized_tick.setdefault("source_received_at", normalized_tick.get("received_at"))
         
         with self._lock:
             current_source = self._tick_source
             
             if incoming_source == "MT5":
-                self._latest_tick = dict(tick)
-                self._latest_tick_received_at = datetime.now(timezone.utc)
+                self._latest_tick = normalized_tick
+                self._latest_tick_received_at = local_received_at
                 self._tick_source = "MT5"
             elif incoming_source == "ALLTICK":
                 if current_source != "MT5":
-                    self._latest_tick = dict(tick)
-                    self._latest_tick_received_at = datetime.now(timezone.utc)
+                    self._latest_tick = normalized_tick
+                    self._latest_tick_received_at = local_received_at
                     self._tick_source = "ALLTICK"
                 # If MT5 exists, ignore AllTick (MT5 always wins)
             else:
-                self._latest_tick = dict(tick)
-                self._latest_tick_received_at = datetime.now(timezone.utc)
+                self._latest_tick = normalized_tick
+                self._latest_tick_received_at = local_received_at
                 self._tick_source = incoming_source or "UNKNOWN"
 
     def get_tick(self) -> dict[str, Any] | None:
@@ -53,7 +63,7 @@ class RuntimeStateService:
                 return None
             payload = dict(self._latest_tick)
             if self._latest_tick_received_at is not None:
-                payload.setdefault("received_at", self._latest_tick_received_at.isoformat())
+                payload["received_at"] = self._latest_tick_received_at.isoformat()
             return payload
 
     def get_tick_source(self) -> str:
@@ -132,6 +142,48 @@ class RuntimeStateService:
         with self._lock:
             return self._ai_provider, self._ai_api_key
 
+    def set_engine_status(
+        self,
+        *,
+        phase: str,
+        message: str,
+        detail: str | None = None,
+        symbol: str | None = None,
+        trading_style: str | None = None,
+        progress: int | float | None = None,
+        current_gate: str | None = None,
+        candidate_count: int | None = None,
+        rejected_count: int | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        status: dict[str, Any] = {
+            "phase": phase,
+            "message": message,
+            "detail": detail,
+            "symbol": symbol,
+            "trading_style": trading_style,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if progress is not None:
+            status["progress"] = progress
+        if current_gate:
+            status["current_gate"] = current_gate
+        if candidate_count is not None:
+            status["candidate_count"] = candidate_count
+        if rejected_count is not None:
+            status["rejected_count"] = rejected_count
+        status.update({key: value for key, value in extra.items() if value is not None})
+
+        with self._lock:
+            self._engine_status = status
+        return dict(status)
+
+    def get_engine_status(self) -> dict[str, Any] | None:
+        with self._lock:
+            if self._engine_status is None:
+                return None
+            return dict(self._engine_status)
+
     def snapshot(self) -> dict[str, Any]:
         tick = self.get_tick()
         with self._lock:
@@ -150,6 +202,7 @@ class RuntimeStateService:
                 "latest_candles": candle_state,
                 "ai_provider": self._ai_provider,
                 "has_ai_key": bool(self._ai_api_key),
+                "engine_status": dict(self._engine_status) if self._engine_status else None,
             }
 
 
