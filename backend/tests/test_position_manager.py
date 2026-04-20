@@ -6,6 +6,7 @@ from app.services.position_manager import (
     PositionManager,
     PositionManagerConfig,
 )
+from app.schemas.signal import TradeSignal
 
 
 class PositionManagerTests(unittest.TestCase):
@@ -41,6 +42,26 @@ class PositionManagerTests(unittest.TestCase):
         self.assertFalse(self.manager.is_duplicate_signal("XAUUSD", "BUY"))
         self.assertTrue(self.manager.is_duplicate_signal("XAUUSD", "BUY"))
         self.assertFalse(self.manager.is_duplicate_signal("XAUUSD", "SELL"))
+
+    def test_filtering_does_not_start_execution_cooldown(self):
+        signal = TradeSignal(
+            symbol="XAUUSD",
+            direction="BUY",
+            entry_price=3200.0,
+            stop_loss=3198.0,
+            take_profit_1=3203.0,
+            take_profit_2=3205.0,
+            confidence=80.0,
+            reasoning="test",
+            trading_style="Scalper",
+        )
+
+        filtered = self.manager.filter_signals([signal], "XAUUSD")
+
+        self.assertFalse(filtered[0][2])
+        self.assertFalse(self.manager.is_duplicate_signal("XAUUSD", "BUY", record=False))
+        self.manager.mark_signal_emitted("XAUUSD", "BUY")
+        self.assertTrue(self.manager.is_duplicate_signal("XAUUSD", "BUY", record=False))
 
     def test_same_direction_high_confidence_scales_in(self):
         decision = self.manager.decide_action(

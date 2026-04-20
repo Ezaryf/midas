@@ -6,6 +6,7 @@ import pandas as pd
 from app.api.ws.mt5_handler import manager
 from app.core.loop import STYLE_CONFIG, is_trading_session_active
 from app.services.market_state import build_analysis_batch, build_snapshot, detect_ranked_setups, determine_market_phase
+from app.services.runtime_state import runtime_state
 
 
 def make_df(closes: list[float], volume_base: float = 1000) -> pd.DataFrame:
@@ -243,6 +244,39 @@ class MarketStateEngineTests(unittest.TestCase):
             self.assertTrue(is_trading_session_active(style="Scalper", symbol="XAUUSD"))
         finally:
             manager.latest_tick = previous_tick
+
+    def test_scalper_session_prefers_received_at_over_stale_broker_time(self):
+        previous_tick = manager.latest_tick
+        previous_runtime_tick = runtime_state.get_tick()
+        try:
+            runtime_state.set_tick(None)
+            manager.latest_tick = {
+                "symbol": "XAUUSD",
+                "bid": 3125.5,
+                "ask": 3125.8,
+                "time": (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(),
+                "received_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
+            }
+            self.assertTrue(is_trading_session_active(style="Scalper", symbol="XAUUSD"))
+        finally:
+            manager.latest_tick = previous_tick
+            runtime_state.set_tick(previous_runtime_tick)
+
+    def test_scalper_session_treats_gold_and_xauusd_as_same_symbol(self):
+        previous_tick = manager.latest_tick
+        previous_runtime_tick = runtime_state.get_tick()
+        try:
+            runtime_state.set_tick(None)
+            manager.latest_tick = {
+                "symbol": "GOLD",
+                "bid": 3125.5,
+                "ask": 3125.8,
+                "received_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
+            }
+            self.assertTrue(is_trading_session_active(style="Scalper", symbol="XAUUSD"))
+        finally:
+            manager.latest_tick = previous_tick
+            runtime_state.set_tick(previous_runtime_tick)
 
 
 if __name__ == "__main__":
