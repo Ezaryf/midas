@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useMidasStore, type PriceUpdate, type TradeSignal } from '@/store/useMidasStore';
-import type { AnalysisBatch } from '@/lib/types';
+import type { AnalysisBatch, EngineStatus, ExecutionAck } from '@/lib/types';
 import { getBackendUrl } from '@/lib/config';
 
 const SSE_URL = '/api/sse/stream';
@@ -58,6 +58,13 @@ export const useSSE = () => {
               }
             } else if (payload.type === 'MARKET_STATE') {
               store.setMarketState(payload.data);
+            } else if (payload.type === 'ENGINE_STATUS') {
+              const status = payload.data as EngineStatus;
+              if (status?.phase && status?.message) {
+                store.setEngineStatus(status);
+              }
+            } else if (payload.type === 'EXECUTION_ACK') {
+              store.setExecutionAck(payload.data as ExecutionAck);
             }
           } catch (e) {
             // Silently ignore parse errors

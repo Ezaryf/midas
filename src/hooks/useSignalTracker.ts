@@ -12,6 +12,7 @@ import { useMidasStore } from "@/store/useMidasStore";
 export function useSignalTracker() {
   const { data: livePrice } = useLivePrice();
   const processingRef = useRef(false);
+  const resolvedRef = useRef<Set<string>>(new Set());
   const { activeSignal, clearActiveSignal } = useMidasStore();
 
   useEffect(() => {
@@ -21,6 +22,21 @@ export function useSignalTracker() {
     try {
       const price = livePrice.price;
       const sig = activeSignal;
+      const signalKey =
+        sig.id ||
+        sig.signal_id ||
+        (sig.analysis_batch_id
+          ? `${sig.analysis_batch_id}-${sig.rank ?? 1}`
+          : `${sig.symbol || "XAUUSD"}-${sig.direction}-${sig.entry_price}`);
+      if (sig.status === "HIT_TP1" || sig.status === "HIT_TP2" || sig.status === "STOPPED" || sig.status === "EXPIRED") {
+        resolvedRef.current.add(signalKey);
+        clearActiveSignal();
+        return;
+      }
+      if (resolvedRef.current.has(signalKey)) {
+        clearActiveSignal();
+        return;
+      }
       const isBuy = sig.direction === "BUY";
 
       let newStatus: string | null = null;
@@ -44,7 +60,9 @@ export function useSignalTracker() {
       }
 
       if (newStatus) {
+        resolvedRef.current.add(signalKey);
         console.log(`[SignalTracker] Signal ${sig.id ?? "active"} → ${newStatus} @ ${price}`);
+        useMidasStore.getState().updateSignalStatus(signalKey, newStatus as typeof sig.status);
         clearActiveSignal();
       }
     } finally {
