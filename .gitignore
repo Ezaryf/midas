@@ -29,6 +29,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+backend/*.log
+backend/logs/
 
 # env files (can opt-in for committing if needed)
 .env*
@@ -40,12 +42,20 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# pytest
+.pytest_cache/
+.pytest-cache-*
+
 # python
 **/__pycache__/
 *.pyc
 *.pyo
-/.ruff_cache/
+.ruff_cache/
 backend/venv/
+*.egg-info/
+dist/
+build/
+*.egg
 
 # temp
 tmp/
@@ -63,5 +73,3 @@ package-lock.json
 .agents/
 .claude/
 .kiro/
-*.pyc
-backend/app/api/ws/__pycache__/mt5_handler.cpython-313.pyc
