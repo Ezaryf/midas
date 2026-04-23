@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Reconnect backoff: 30s â†’ 60s â†’ 120s â†’ 240s max
 _RECONNECT_BASE_SECONDS = 30
 _RECONNECT_MAX_SECONDS = 240
+_MYSQL_TIMEOUT_SECONDS = max(1, int(os.getenv("MYSQL_TIMEOUT_SECONDS", "3")))
 
 
 def _json_dumps(value):
@@ -76,6 +77,7 @@ def _parse_mysql_url(url: str) -> dict:
         "host": host,
         "port": port,
         "database": database,
+        "connection_timeout": _MYSQL_TIMEOUT_SECONDS,
     }
 
 
@@ -188,6 +190,8 @@ class DatabaseService:
             return
         try:
             cursor = conn.cursor()
+            cursor.execute(f"SET SESSION lock_wait_timeout = {_MYSQL_TIMEOUT_SECONDS}")
+            cursor.execute(f"SET SESSION innodb_lock_wait_timeout = {_MYSQL_TIMEOUT_SECONDS}")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS signals (
                     id VARCHAR(36) PRIMARY KEY,

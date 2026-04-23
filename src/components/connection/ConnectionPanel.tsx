@@ -203,8 +203,8 @@ export default function ConnectionPanel() {
                 <span className="text-[10px] font-bold text-gold bg-gold/10 rounded px-1.5 py-0.5 mt-0.5">3</span>
                 <div className="flex-1 space-y-1">
                   <p className="text-xs text-text-secondary">Make sure MetaTrader 5 is open and logged in, then run:</p>
-                  <CodeBlock>python backend/mt5_bridge.py</CodeBlock>
-                  <p className="text-[10px] text-text-muted">Add <code className="text-gold">--auto-trade</code> to enable order execution</p>
+                  <CodeBlock>python backend/mt5_bridge.py --auto-trade</CodeBlock>
+                  <p className="text-[10px] text-text-muted">Use this auto-trade bridge when you want orders to execute from signals.</p>
                 </div>
               </div>
               <div className="rounded-xl bg-warning/5 border border-warning/20 p-3 mt-2">

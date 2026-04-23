@@ -3,10 +3,9 @@
 import { startTransition } from 'react';
 import { useEffect, useRef } from 'react';
 import { useMidasStore, type PriceUpdate, type TradeSignal } from '@/store/useMidasStore';
-import type { AnalysisBatch } from '@/lib/types';
-import { getBackendUrl } from '@/lib/config';
 
-const POLL_INTERVAL = 1000;
+const BASE_POLL_INTERVAL = 3000;
+const MAX_POLL_INTERVAL = 15000;
 
 interface AccountResponse {
   connected: boolean;
@@ -15,38 +14,47 @@ interface AccountResponse {
   ask?: number;
   spread?: number;
   time?: string;
+  received_at?: string;
 }
 
 export const useSignalPolling = () => {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const isPollingRef = useRef(false);
+  const errorCountRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
 
     const poll = async () => {
       if (!mountedRef.current || isPollingRef.current) return;
+      if (useMidasStore.getState().isConnected) {
+        scheduleNext(BASE_POLL_INTERVAL);
+        return;
+      }
       isPollingRef.current = true;
+      let hadError = false;
 
       try {
-        // Poll account/price data
-        const accountRes = await fetch(getBackendUrl('/api/account'), {
+        const accountRes = await fetch('/api/backend/health', {
           method: 'GET',
           headers: { 'Content-Type': 'application/json' },
           signal: AbortSignal.timeout(5000),
         });
 
         if (accountRes.ok) {
-          const accountData: AccountResponse = await accountRes.json();
+          const accountData = await accountRes.json();
+          const tick = accountData?.runtime_state?.latest_tick as AccountResponse | undefined;
           
-          if (accountData.connected && accountData.bid) {
+          if (accountData.mt5_connected && tick?.bid) {
             const priceUpdate: PriceUpdate = {
-              symbol: accountData.symbol || 'XAUUSD',
-              bid: accountData.bid,
-              ask: accountData.ask || accountData.bid + (accountData.spread || 30) / 10000,
-              spread: accountData.spread,
-              time: accountData.time || new Date().toISOString(),
+              symbol: tick.symbol || 'XAUUSD',
+              bid: tick.bid,
+              ask: tick.ask || tick.bid + (tick.spread || 30) / 10000,
+              spread: tick.spread,
+              time: tick.time || new Date().toISOString(),
+              received_at: tick.received_at,
               source: 'http-poll',
             };
             
@@ -54,10 +62,11 @@ export const useSignalPolling = () => {
               useMidasStore.getState().setPrice(priceUpdate);
             });
           }
+        } else {
+          hadError = true;
         }
 
-        // Poll for signals/history to get latest signals
-        const historyRes = await fetch(getBackendUrl('/api/history/signals?limit=5'), {
+        const historyRes = await fetch('/api/signals/history', {
           method: 'GET',
           headers: { 'Content-Type': 'application/json' },
           signal: AbortSignal.timeout(5000),
@@ -69,14 +78,31 @@ export const useSignalPolling = () => {
             const latestSignal = historyData.signals[0];
             startTransition(() => {
               const store = useMidasStore.getState();
-              store.setActiveSignal(latestSignal);
+              const key =
+                latestSignal.id ||
+                latestSignal.signal_id ||
+                (latestSignal.analysis_batch_id
+                  ? `${latestSignal.analysis_batch_id}-${latestSignal.rank ?? 1}`
+                  : `${latestSignal.symbol || store.targetSymbol}-${latestSignal.direction}-${latestSignal.entry_price}`);
+              const existing = store.signalHistory.find((signal) => {
+                const existingKey =
+                  signal.id ||
+                  signal.signal_id ||
+                  (signal.analysis_batch_id
+                    ? `${signal.analysis_batch_id}-${signal.rank ?? 1}`
+                    : `${signal.symbol || store.targetSymbol}-${signal.direction}-${signal.entry_price}`);
+                return existingKey === key;
+              });
+              const terminal = ["HIT_TP1", "HIT_TP2", "STOPPED", "EXPIRED"].includes(existing?.status || latestSignal.status || "");
+              if (!terminal) store.setActiveSignal(latestSignal);
               store.addSignalToHistory(latestSignal);
             });
           }
+        } else {
+          hadError = true;
         }
 
-        // Poll for positions (to keep state fresh)
-        const positionsRes = await fetch(getBackendUrl('/api/positions/open'), {
+        const positionsRes = await fetch('/api/positions', {
           method: 'GET',
           headers: { 'Content-Type': 'application/json' },
           signal: AbortSignal.timeout(5000),
@@ -85,22 +111,31 @@ export const useSignalPolling = () => {
         if (positionsRes.ok) {
           const positionsData: { positions?: unknown[] } = await positionsRes.json();
           // Positions are handled separately, just keep state updated
+        } else {
+          hadError = true;
         }
 
       } catch (error) {
-        // Silently ignore polling errors - we're using fallback
+        hadError = true;
       } finally {
+        errorCountRef.current = hadError ? Math.min(errorCountRef.current + 1, 4) : 0;
         isPollingRef.current = false;
+        scheduleNext(Math.min(BASE_POLL_INTERVAL * 2 ** errorCountRef.current, MAX_POLL_INTERVAL));
       }
     };
 
-    // Start polling
+    const scheduleNext = (delay: number) => {
+      if (!mountedRef.current) return;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(poll, delay);
+    };
+
     poll(); // Initial poll
-    intervalRef.current = setInterval(poll, POLL_INTERVAL);
 
     return () => {
       mountedRef.current = false;
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, []);
 };

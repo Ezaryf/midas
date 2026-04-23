@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBackendUrl, config } from "@/lib/config";
+import { maybeStartLocalBackend } from "@/lib/server/backendProcess";
+
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -14,6 +17,7 @@ export async function POST(req: NextRequest) {
     const data = await res.json();
     return NextResponse.json(data, { status: res.ok ? 200 : 500 });
   } catch (e) {
+    maybeStartLocalBackend();
     const msg = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json(
       { status: "error", message: `Backend unreachable: ${msg}` },

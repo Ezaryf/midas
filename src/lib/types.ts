@@ -26,6 +26,10 @@ export interface TradeSignal {
   context_tags?: string[];
   source?: string;
   auto_execute?: boolean;
+  auto_execute_state?: "attempted" | "blocked" | "not_attempted";
+  auto_execute_reason?: string;
+  broker_symbol?: string;
+  execution_symbol?: string;
   execution_mode?: "normal" | "forced";
   forced_from_hold?: boolean;
   bypassed_blockers?: string[];
@@ -158,6 +162,31 @@ export interface AnalysisBatch {
   engine_insight?: EngineInsight | null;
   primary: TradeSignal;
   backups: TradeSignal[];
+}
+
+export interface EngineStatus {
+  phase: string;
+  message: string;
+  detail?: string | null;
+  symbol?: string | null;
+  trading_style?: string | null;
+  updated_at: string;
+  progress?: number | null;
+  current_gate?: string | null;
+  candidate_count?: number | null;
+  rejected_count?: number | null;
+}
+
+export interface ExecutionAck {
+  signal_id?: string;
+  status?: "ok" | "error" | "blocked" | "skipped" | "closed" | string;
+  ticket?: number | string | null;
+  price?: number | null;
+  message?: string;
+  symbol?: string;
+  broker_symbol?: string;
+  execution_symbol?: string;
+  updated_at?: string;
 }
 
 export interface MarketState {

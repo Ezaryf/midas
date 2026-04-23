@@ -1,4 +1,4 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# See https://help.github.com/articles/ignoring-files/ for more about ignore files.
 
 # dependencies
 /node_modules
@@ -12,9 +12,11 @@
 
 # testing
 /coverage
+test-results/
 
 # next.js
 /.next/
+/.next-dev/
 /out/
 
 # production
@@ -32,7 +34,7 @@ yarn-error.log*
 backend/*.log
 backend/logs/
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
 
 # vercel
@@ -60,9 +62,6 @@ build/
 # temp
 tmp/
 
-# test artifacts
-test-results/
-
 # backup files
 *.backup
 
@@ -73,3 +72,6 @@ package-lock.json
 .agents/
 .claude/
 .kiro/
+
+# local backups/conflicts
+*-Ezaryf.*

@@ -2,7 +2,7 @@
 
 import { startTransition, useEffect, useRef } from 'react';
 import { useMidasStore, type PriceUpdate, type TradeSignal } from '@/store/useMidasStore';
-import type { AnalysisBatch } from '@/lib/types';
+import type { AnalysisBatch, EngineStatus, ExecutionAck } from '@/lib/types';
 
 const BASE_RETRY_DELAY = 2000;
 const MAX_RETRY_DELAY = 10000;
@@ -92,6 +92,13 @@ export const useSocket = () => {
           } else if (payload.type === 'MARKET_STATE') {
             const ms = payload.data;
             if (ms) store.setMarketState(ms);
+          } else if (payload.type === 'ENGINE_STATUS') {
+            const status = payload.data as EngineStatus;
+            if (status?.phase && status?.message) {
+              store.setEngineStatus(status);
+            }
+          } else if (payload.type === 'EXECUTION_ACK') {
+            store.setExecutionAck(payload.data as ExecutionAck);
           } else if (payload.type === 'PONG') {
             // Heartbeat response received
           }

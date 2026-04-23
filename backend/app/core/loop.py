@@ -9,6 +9,7 @@ from typing import Optional
 from app.api.ws.mt5_handler import manager
 from app.services.kill_switch import KillSwitch, KillSwitchContext
 from app.services.runtime_state import runtime_state
+from app.services.symbols import symbols_match
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +76,10 @@ def _latest_tick_is_recent(target_symbol: Optional[str] = None, freshness_second
         return False
 
     tick_symbol = latest_tick.get("symbol")
-    if target_symbol and tick_symbol and tick_symbol != target_symbol:
+    if target_symbol and tick_symbol and not symbols_match(tick_symbol, target_symbol):
         return False
 
-    raw_time = latest_tick.get("time") or latest_tick.get("received_at")
+    raw_time = latest_tick.get("received_at") or latest_tick.get("time")
     if not raw_time:
         return bool(latest_tick.get("bid"))
 

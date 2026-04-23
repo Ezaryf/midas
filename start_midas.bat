@@ -1,0 +1,13 @@
+@echo off
+echo Starting Midas Trading System...
+echo.
+echo Starting Frontend (bun)...
+start "Midas Frontend" bun run dev
+echo.
+echo Starting Backend (python)...
+start "Midas Backend" python backend\run_midas.py --auto-trade
+echo.
+echo Both servers should be starting...
+echo - Frontend: http://localhost:3000
+echo - Backend: http://localhost:8000
+pause

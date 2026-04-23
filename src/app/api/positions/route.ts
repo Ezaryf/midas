@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { getBackendUrl, config } from "@/lib/config";
+import { maybeStartLocalBackend } from "@/lib/server/backendProcess";
+
+export const runtime = "nodejs";
 
 export async function GET() {
   try {
@@ -19,6 +22,7 @@ export async function GET() {
     const data = await response.json();
     return NextResponse.json(data);
   } catch (error) {
+    maybeStartLocalBackend();
     console.error("Error fetching positions:", error);
     return NextResponse.json(
       { error: "Backend connection failed" },

@@ -31,8 +31,9 @@ class TradingState:
         self.target_symbol: str = "XAUUSD"
         self._db_available: bool = False
 
-        # Attempt to restore from database on init
-        self._restore_from_db()
+        # Restore in the background so a slow/locked MySQL server cannot block
+        # FastAPI startup and make the live websocket look dead.
+        threading.Thread(target=self._restore_from_db, daemon=True).start()
 
     def _get_db(self):
         """Lazy import to avoid circular dependency."""

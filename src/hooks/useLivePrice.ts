@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMidasStore } from "@/store/useMidasStore";
 import { useShallow } from 'zustand/react/shallow';
 
-const STALE_TICK_MS = 8_000;
+const STALE_TICK_MS = 30_000;
 
 export interface LivePrice {
   price: number;
@@ -73,7 +73,7 @@ export function useLivePrice() {
   const bid = rawBid * calibrationFactor;
   const ask = rawAsk * calibrationFactor;
   
-  const time = currentPrice?.time ?? "";
+  const time = currentPrice?.received_at ?? currentPrice?.time ?? "";
   const spread = Math.max(0, +(ask - bid).toFixed(2));
 
   useEffect(() => {
@@ -141,7 +141,7 @@ export function useLivePrice() {
       } else if (!isSymbolMatch) {
         error = `Symbol Mismatch (Midas: ${activeSymbol}, MT5: ${currentSymbol})`;
       } else if (isStale) {
-        error = "Reconnecting to MT5...";
+        error = "Waiting for the next MT5 tick...";
       } else if (bid <= 1) {
         error = "Waiting for live tick...";
       }
@@ -176,7 +176,7 @@ export function useLivePrice() {
         source: tickSource,
       } as LivePrice,
       loading: false,
-      error: isStale ? "Reconnecting to MT5..." : null as string | null,
+      error: isStale ? "Waiting for the next MT5 tick..." : null as string | null,
       isStale,
       ageMs,
       isSymbolMatch,

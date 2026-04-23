@@ -16,6 +16,7 @@ from app.schemas.contracts import (
 )
 from app.services.repositories import analytics_repository, order_repository, signal_repository
 from app.services.runtime_state import runtime_state
+from app.services.symbols import resolve_execution_symbol
 from app.services.trading_state import trading_state
 
 
@@ -57,15 +58,49 @@ class ApplicationService:
     async def execute_signal(self, signal_data: dict[str, Any]) -> ExecutionResultResponse:
         connections = len(manager.active_connections)
         if connections == 0:
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                connections = len(manager.active_connections)
+                if connections > 0:
+                    break
+
+        if connections == 0:
+            signal_id = str(uuid.uuid4())[:8]
+            payload = dict(signal_data)
+            payload["signal_id"] = signal_id
+            execution_symbol = resolve_execution_symbol(
+                payload.get("symbol") or runtime_state.get_target_symbol(),
+                broker_symbol=os.getenv("MT5_SYMBOL"),
+                tick_symbol=(runtime_state.get_tick() or {}).get("symbol"),
+            )
+            payload.setdefault("broker_symbol", execution_symbol)
+            payload.setdefault("execution_symbol", execution_symbol)
+            await manager.broadcast_json({"type": "SIGNAL", "action": "PLACE_ORDER", "data": payload})
             return ExecutionResultResponse(
                 status="warning",
-                message="No MT5 bridge connected. Run: python backend/mt5_bridge.py",
-                data={"connections": 0},
+                message=(
+                    "MT5 bridge is not connected right now. The order command was queued and will be "
+                    "sent automatically when the bridge reconnects."
+                ),
+                data={
+                    "connections": 0,
+                    "queued": True,
+                    "signal_id": signal_id,
+                    "pending_signals": len(manager._pending_signals),
+                    "run_command": "python backend/run_midas.py --auto-trade",
+                },
             )
 
         signal_id = str(uuid.uuid4())[:8]
         payload = dict(signal_data)
         payload["signal_id"] = signal_id
+        execution_symbol = resolve_execution_symbol(
+            payload.get("symbol") or runtime_state.get_target_symbol(),
+            broker_symbol=os.getenv("MT5_SYMBOL"),
+            tick_symbol=(runtime_state.get_tick() or {}).get("symbol"),
+        )
+        payload.setdefault("broker_symbol", execution_symbol)
+        payload.setdefault("execution_symbol", execution_symbol)
 
         await manager.broadcast_json({"type": "SIGNAL", "action": "PLACE_ORDER", "data": payload})
 
